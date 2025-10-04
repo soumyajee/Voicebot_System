@@ -2,10 +2,4 @@ streamlit
 requests
 gtts
 python-dotenv
-st-audiorec
-
-
-
-
-
-
+audio-recorder-streamlit
