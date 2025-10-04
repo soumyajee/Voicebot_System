@@ -6,4 +6,5 @@ speechrecognition
 numpy
 sounddevice
 streamlit-audiorec
+python-dotenv
 
