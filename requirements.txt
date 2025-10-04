@@ -5,8 +5,8 @@ gtts
 speechrecognition
 numpy
 sounddevice
-streamlit-audiorec
 python-dotenv
 soundfile
 audiorecorder
+
 
