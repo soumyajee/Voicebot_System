@@ -5,7 +5,6 @@ from gtts import gTTS
 import tempfile
 import os
 import base64
-import speech_recognition as sr
 from dotenv import load_dotenv
 
 # -----------------------------
@@ -13,6 +12,7 @@ from dotenv import load_dotenv
 # -----------------------------
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Add this for Whisper
 
 # OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -45,7 +45,7 @@ def audio_recorder_component():
             };
             
             mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                 const reader = new FileReader();
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
@@ -198,33 +198,42 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# Function to transcribe audio from base64
-def transcribe_audio(audio_base64):
-    recognizer = sr.Recognizer()
+# Function to transcribe audio using OpenAI Whisper API
+def transcribe_audio_whisper(audio_base64):
+    if not OPENAI_API_KEY:
+        st.error("❌ OpenAI API key not found. Please set OPENAI_API_KEY in your environment variables.")
+        return None
+    
     try:
         # Decode base64 to bytes
         audio_bytes = base64.b64decode(audio_base64)
         
-        # Save to temporary WAV file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
         
-        # Transcribe
-        with sr.AudioFile(tmp_file_path) as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language="en-US")
+        # Call Whisper API
+        with open(tmp_file_path, 'rb') as audio_file:
+            files = {'file': ('audio.webm', audio_file, 'audio/webm')}
+            headers = {'Authorization': f'Bearer {OPENAI_API_KEY}'}
+            data = {'model': 'whisper-1'}
+            
+            response = requests.post(
+                'https://api.openai.com/v1/audio/transcriptions',
+                headers=headers,
+                files=files,
+                data=data
+            )
+            response.raise_for_status()
+            result = response.json()
         
         # Clean up
         os.unlink(tmp_file_path)
-        return text
+        return result['text']
         
-    except sr.UnknownValueError:
-        st.error("❌ Could not understand the audio. Please speak clearly and try again.")
-        return None
-    except sr.RequestError as e:
-        st.error(f"❌ Speech recognition service error: {e}")
+    except requests.RequestException as e:
+        st.error(f"❌ Whisper API error: {e}")
         return None
     except Exception as e:
         st.error(f"❌ Transcription error: {e}")
@@ -245,11 +254,11 @@ with tab1:
         
         # Decode and play audio
         audio_bytes = base64.b64decode(audio_data)
-        st.audio(audio_bytes, format="audio/wav")
+        st.audio(audio_bytes, format="audio/webm")
         
         # Transcribe and get response
         with st.spinner("🔄 Transcribing your speech..."):
-            user_input = transcribe_audio(audio_data)
+            user_input = transcribe_audio_whisper(audio_data)
             
             if user_input:
                 st.markdown("### 🎤 You said:")
@@ -335,13 +344,14 @@ with st.expander("🔧 Troubleshooting"):
     
     **API errors?**
     - Ensure `OPENROUTER_API_KEY` is set in environment variables
-    - Check your API key is valid and has credits
+    - Ensure `OPENAI_API_KEY` is set for Whisper transcription
+    - Check your API keys are valid and have credits
     
     **Deployment issues?**
     - This code works on Streamlit Cloud and Render (HTTPS enabled)
-    - No external packages needed for audio recording
+    - No PyAudio needed - uses OpenAI Whisper API
     - Uses native browser MediaRecorder API
     """)
 
 st.markdown("---")
-st.caption("💡 Powered by HTML5 MediaRecorder API - No external dependencies needed!")
+st.caption("💡 Powered by HTML5 MediaRecorder + OpenAI Whisper - No PyAudio needed!")
