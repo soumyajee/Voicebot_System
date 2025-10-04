@@ -4,3 +4,6 @@ gtts
 python-dotenv
 audio-recorder-streamlit
 librosa
+scipy
+dtw
+
