@@ -8,6 +8,8 @@ import base64
 from dotenv import load_dotenv
 import librosa
 import numpy as np
+from dtw import dtw
+from scipy.spatial.distance import euclidean
 import soundfile as sf
 
 load_dotenv()
@@ -18,6 +20,54 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Live Voice Bot")
+
+def preprocess_audio_manual(audio_bytes):
+    try:
+        # Save audio bytes to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_file_path = tmp_file.name
+        
+        # Load audio with librosa
+        audio, sr = librosa.load(tmp_file_path, sr=None)
+        
+        # Check audio properties
+        duration = len(audio) / sr
+        if duration < 0.5:
+            os.unlink(tmp_file_path)
+            st.warning("Audio is too short. Please record a longer clip (at least 0.5s).")
+            return None, None
+        if np.max(np.abs(audio)) < 0.01:
+            os.unlink(tmp_file_path)
+            st.warning("Audio is too quiet. Please speak louder or check your microphone.")
+            return None, None
+        
+        # Resample to 16kHz
+        target_sr = 16000
+        if sr != target_sr:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+        
+        # Normalize audio (scale to [-1, 1])
+        audio = audio / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
+        
+        # Save normalized audio back to bytes
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
+            sf.write(tmp_out.name, audio, sr)
+            with open(tmp_out.name, "rb") as f:
+                processed_audio = f.read()
+        
+        os.unlink(tmp_file_path)
+        os.unlink(tmp_out.name)
+        
+        # Debug: Log audio properties
+        st.write(f"Preprocessed audio: Duration={duration:.2f}s, Sample rate={sr}Hz, Max amplitude={np.max(np.abs(audio)):.2f}")
+        
+        return processed_audio, sr
+    
+    except Exception as e:
+        st.error(f"Audio preprocessing error: {e}")
+        return None, None
 
 def get_response(prompt):
     if not API_KEY:
@@ -53,41 +103,51 @@ def text_to_speech(text):
 
 def transcribe_audio_heuristic(audio_bytes):
     try:
-        # Save audio bytes to temporary file
+        # Preprocess audio
+        processed_audio, sr = preprocess_audio_manual(audio_bytes)
+        if processed_audio is None:
+            return None
+        
+        # Load preprocessed audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(audio_bytes)
+            tmp_file.write(processed_audio)
             tmp_file_path = tmp_file.name
         
-        # Load audio with librosa
-        audio, sr = librosa.load(tmp_file_path, sr=16000)  # Resample to 16kHz
+        audio, sr = librosa.load(tmp_file_path, sr=16000)
         os.unlink(tmp_file_path)
         
-        # Extract MFCC features
-        mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+        # Segment audio into 1-second chunks
+        chunk_length = sr  # 1 second
+        chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
         
-        # Simple heuristic: Map MFCC patterns to a small vocabulary
-        # This is a placeholder; in practice, you'd need a phoneme-to-text mapping
+        # Define vocabulary with precomputed MFCCs
+        # Replace with actual MFCCs from your audio samples
         vocabulary = {
-            "hello": np.random.rand(13, 100),  # Dummy MFCC for "hello"
-            "world": np.random.rand(13, 100),  # Dummy MFCC for "world"
-            # Add more words with precomputed MFCCs for your use case
+            "hello": librosa.feature.mfcc(y=librosa.load("samples/hello.wav", sr=16000)[0], sr=16000, n_mfcc=13),
+            "world": librosa.feature.mfcc(y=librosa.load("samples/world.wav", sr=16000)[0], sr=16000, n_mfcc=13),
+            "help": librosa.feature.mfcc(y=librosa.load("samples/help.wav", sr=16000)[0], sr=16000, n_mfcc=13),
+            # Add more words
         }
         
-        # Compare MFCCs to vocabulary (simplified distance-based matching)
-        transcription = ""
-        for word, ref_mfcc in vocabulary.items():
-            # Resize MFCCs to match shape for comparison
-            min_len = min(mfccs.shape[1], ref_mfcc.shape[1])
-            mfccs_trunc = mfccs[:, :min_len]
-            ref_mfcc_trunc = ref_mfcc[:, :min_len]
-            distance = np.mean((mfccs_trunc - ref_mfcc_trunc) ** 2)
-            if distance < 0.1:  # Arbitrary threshold
-                transcription += word + " "
+        # Transcribe each chunk
+        transcription = []
+        for chunk_idx, chunk in enumerate(chunks):
+            if len(chunk) < sr * 0.3:  # Skip chunks shorter than 0.3s
+                continue
+            mfccs = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
+            best_word, best_dist = None, float('inf')
+            for word, ref_mfcc in vocabulary.items():
+                min_len = min(mfccs.shape[1], ref_mfcc.shape[1])
+                mfccs_trunc = mfccs[:, :min_len]
+                ref_mfcc_trunc = ref_mfcc[:, :min_len]
+                dist, _, _, _ = dtw(mfccs_trunc.T, ref_mfcc_trunc.T, dist=euclidean)
+                st.write(f"Chunk {chunk_idx+1}: DTW distance for '{word}': {dist:.2f}")
+                if dist < best_dist and dist < 50:  # Tune threshold
+                    best_word, best_dist = word, dist
+            if best_word:
+                transcription.append(best_word)
         
-        if not transcription:
-            transcription = "Unknown speech (no matching words found)"
-        
-        return transcription.strip()
+        return " ".join(transcription).strip() if transcription else "Unknown speech"
         
     except Exception as e:
         st.error(f"Heuristic Transcription error: {e}")
@@ -102,6 +162,11 @@ with tab1:
     
     if audio_bytes:
         st.audio(audio_bytes, format='audio/wav')
+        
+        # Save for debugging
+        with open("debug_audio.wav", "wb") as f:
+            f.write(audio_bytes)
+        st.write("Saved audio for debugging: debug_audio.wav")
         
         with st.spinner("🔄 Transcribing your speech..."):
             user_input = transcribe_audio_heuristic(audio_bytes)
@@ -132,6 +197,7 @@ with tab1:
                                     data=f,
                                     file_name="response.mp3",
                                     mime="audio/mp3",
+                                    key="voice_download",  # Unique key
                                     use_container_width=True
                                 )
                         os.unlink(audio_file)
@@ -163,6 +229,7 @@ with tab2:
                                 data=f,
                                 file_name="response.mp3",
                                 mime="audio/mp3",
+                                key="text_download",  # Unique key
                                 use_container_width=True
                             )
                     os.unlink(audio_file)
