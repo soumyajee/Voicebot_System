@@ -4,7 +4,7 @@ from gtts import gTTS
 import tempfile
 import os
 import speech_recognition as sr
-from streamlit_audio_recorder import audio_recorder  # ✅ Replace PyAudio
+from audiorecorder import audiorecorder  # ✅ Corrected import for streamlit-audiorecorder
 from dotenv import load_dotenv  # ✅ for .env support
 
 # -----------------------------
@@ -89,8 +89,8 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Live Recording from Browser Microphone")
     
-    # Record audio using streamlit-audio-recorder
-    audio_bytes = audio_recorder(
+    # Record audio using streamlit-audiorecorder
+    audio_bytes = audiorecorder(
         text="Click to record",
         recording_color="#e8b923",
         neutral_color="#6aa36f",
