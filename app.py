@@ -141,8 +141,8 @@ def audio_recorder_component():
     </div>
     """
     
-    # Return the component with a unique key
-    audio_data = components.html(audio_html, height=200, key="audio_recorder")
+    # Return the component without a key - let Streamlit handle it
+    audio_data = components.html(audio_html, height=200)
     return audio_data
 
 # Microphone setup guide
