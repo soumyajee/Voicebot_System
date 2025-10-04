@@ -1,72 +1,44 @@
 import streamlit as st
-from audio_recorder_streamlit import audio_recorder
 import requests
 from gtts import gTTS
 import tempfile
 import os
-import base64
+import speech_recognition as sr
 from dotenv import load_dotenv
-import librosa
-import numpy as np
-from fastdtw import fastdtw
-from scipy.spatial.distance import euclidean
-import soundfile as sf
+from streamlit_mic_recorder import mic_recorder  # New: Browser-based recorder
 
+# Load API key from .env file
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Streamlit page configuration
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Live Voice Bot")
+st.write("Record voice directly in your browser! 🎧 (Grant mic permission when prompted.)")
 
-def preprocess_audio_manual(audio_bytes):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_file_path = tmp_file.name
-        
-        audio, sr = librosa.load(tmp_file_path, sr=None)
-        
-        duration = len(audio) / sr
-        if duration < 0.5:
-            os.unlink(tmp_file_path)
-            st.warning("Audio is too short. Please record a longer clip (at least 0.5s).")
-            return None, None
-        if np.max(np.abs(audio)) < 0.01:
-            os.unlink(tmp_file_path)
-            st.warning("Audio is too quiet. Please speak louder or check your microphone.")
-            return None, None
-        
-        target_sr = 16000
-        if sr != target_sr:
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
-            sr = target_sr
-        
-        audio = audio / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
-            sf.write(tmp_out.name, audio, sr)
-            with open(tmp_out.name, "rb") as f:
-                processed_audio = f.read()
-        
-        os.unlink(tmp_file_path)
-        os.unlink(tmp_out.name)
-        
-        st.write(f"Preprocessed audio: Duration={duration:.2f}s, Sample rate={sr}Hz, Max amplitude={np.max(np.abs(audio)):.2f}")
-        
-        return processed_audio, sr
-    
-    except Exception as e:
-        st.error(f"Audio preprocessing error: {e}")
-        return None, None
+# Microphone setup guide
+with st.expander("📱 Microphone Setup (Important!)"):
+    st.markdown("""
+    ### Before Recording:
+    1. **Allow** microphone access in your browser (popup will appear on first record).
+    2. **Test** your mic in browser settings (e.g., Chrome: chrome://settings/content/microphone).
+    3. **Use headphones** if in a noisy environment.
+    4. Recording happens in-browser—no server mic needed.
+    """)
 
+# Initialize session state for audio
+if 'audio_bytes' not in st.session_state:
+    st.session_state.audio_bytes = None
+
+# Function to get response from OpenRouter
 def get_response(prompt):
     if not API_KEY:
-        st.error("API key not found. Add OPENROUTER_API_KEY to Streamlit secrets.")
+        st.error("API key not found. Add OPENROUTER_API_KEY to .env file.")
         return None
-    
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -80,10 +52,11 @@ def get_response(prompt):
         response.raise_for_status()
         result = response.json()
         return result["choices"][0]["message"]["content"]
-    except Exception as e:
-        st.error(f"API Error: {e}")
+    except requests.RequestException as e:
+        st.error(f"❌ API Error: {e}")
         return None
 
+# Function to convert text to speech
 def text_to_speech(text):
     try:
         tts = gTTS(text)
@@ -91,117 +64,106 @@ def text_to_speech(text):
         tts.save(temp_file.name)
         return temp_file.name
     except Exception as e:
-        st.error(f"TTS Error: {e}")
+        st.error(f"❌ TTS Error: {e}")
         return None
 
-def transcribe_audio_heuristic(audio_bytes):
+# Function to transcribe audio bytes (using speech_recognition)
+def transcribe_audio(audio_bytes):
+    if not audio_bytes:
+        return None
     try:
-        processed_audio, sr = preprocess_audio_manual(audio_bytes)
-        if processed_audio is None:
-            return None
-        
+        # Save bytes to temp WAV file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(processed_audio)
+            tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
-        
-        audio, sr = librosa.load(tmp_file_path, sr=16000)
+
+        # Transcribe with Google STT
+        recognizer = sr.Recognizer()
+        recognizer.energy_threshold = 300
+        recognizer.dynamic_energy_threshold = True
+
+        with sr.AudioFile(tmp_file_path) as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio_data = recognizer.record(source)
+            user_input = recognizer.recognize_google(audio_data, language="en-US")
+
+        # Cleanup
         os.unlink(tmp_file_path)
-        
-        chunk_length = int(sr * 0.5)  # Convert to integer for 0.5 seconds
-        chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
-        
-        # Define vocabulary with error handling
-        vocabulary_files = {
-            "hello": "samples/hello.wav",
-            "world": "samples/world.wav",
-            "help": "samples/help.wav",
-            # Add more words, e.g., "start": "samples/start.wav"
-        }
-        vocabulary = {}
-        for word, file_path in vocabulary_files.items():
-            if os.path.exists(file_path):
-                try:
-                    audio_data, _ = librosa.load(file_path, sr=16000)
-                    vocabulary[word] = librosa.feature.mfcc(y=audio_data, sr=16000, n_mfcc=13)
-                except Exception as e:
-                    st.warning(f"Failed to load {file_path}: {e}")
-            else:
-                st.warning(f"Vocabulary file {file_path} not found. Skipping word '{word}'.")
-        
-        if not vocabulary:
-            st.error("No valid vocabulary files found. Please add WAV files to the 'samples/' folder.")
-            return "No vocabulary available"
-        
-        transcription = []
-        for chunk_idx, chunk in enumerate(chunks):
-            if len(chunk) < sr * 0.3:
-                continue
-            mfccs = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
-            best_word, best_dist = None, float('inf')
-            for word, ref_mfcc in vocabulary.items():
-                min_len = min(mfccs.shape[1], ref_mfcc.shape[1])
-                mfccs_trunc = mfccs[:, :min_len]
-                ref_mfcc_trunc = ref_mfcc[:, :min_len]
-                dist, _ = fastdtw(mfccs_trunc.T, ref_mfcc_trunc.T, dist=euclidean)
-                st.write(f"Chunk {chunk_idx+1}: DTW distance for '{word}': {dist:.2f}")
-                if dist < best_dist and dist < 50:  # Tune threshold
-                    best_word, best_dist = word, dist
-            if best_word:
-                transcription.append(best_word)
-        
-        return " ".join(transcription).strip() if transcription else "Unknown speech"
-        
+        return user_input
+    except sr.UnknownValueError:
+        st.error("❌ Could not understand the audio. Please try speaking clearly.")
+        return None
     except Exception as e:
-        st.error(f"Heuristic Transcription error: {e}")
+        st.error(f"❌ Transcription Error: {e}")
         return None
 
+# Main interface tabs
 tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 
 with tab1:
-    st.subheader("Record Your Voice")
+    st.subheader("Browser-Based Voice Recording")
     
-    audio_bytes = audio_recorder()
+    # Recording duration selector
+    record_duration = st.selectbox("Suggested Recording Duration (seconds)", [5, 10, 15, 30], index=1)
     
+    # Use the mic recorder component
+    audio_bytes = mic_recorder(
+        wake_word="record",  # Optional: Custom wake word (default is none)
+        recording_color="#e8b923",  # Visual feedback color
+        neutral_color="#6aa36f",  # Idle color
+        max_msec=record_duration * 1000,  # Limit duration
+        display_recording_text=True,  # Show "Recording..." text
+        wave_color="#e8b923"  # Waveform color
+    )
+    
+    # Capture and display recorded audio
     if audio_bytes:
-        st.audio(audio_bytes, format='audio/wav')
+        st.session_state.audio_bytes = audio_bytes
+        st.success(f"✅ Recorded {len(audio_bytes)/ (record_duration * 16000 * 2):.1f}s of audio!")  # Rough duration estimate
         
-        with open("debug_audio.wav", "wb") as f:
-            f.write(audio_bytes)
-        st.write("Saved audio for debugging: debug_audio.wav")
+        # Play back the recording
+        st.audio(audio_bytes, format="audio/wav")
         
-        with st.spinner("🔄 Transcribing your speech..."):
-            user_input = transcribe_audio_heuristic(audio_bytes)
-            
-            if user_input:
-                st.markdown("### 🎤 You said:")
-                st.info(f'"{user_input}"')
+        # Transcribe button (manual trigger after recording)
+        if st.button("📝 Transcribe & Get Response", type="primary", use_container_width=True):
+            with st.spinner("🔄 Transcribing your speech..."):
+                user_input = transcribe_audio(audio_bytes)
                 
-                with st.spinner("🤔 Getting AI response..."):
-                    answer = get_response(user_input)
-                
-                if answer:
-                    st.markdown("---")
-                    st.markdown("### 🤖 Bot Response:")
-                    st.write(answer)
+                if user_input:
+                    st.markdown("### 🎤 You said:")
+                    st.info(f'"{user_input}"')
                     
-                    with st.spinner("🔊 Generating voice response..."):
-                        audio_file = text_to_speech(answer)
+                    with st.spinner("🤔 Getting AI response..."):
+                        answer = get_response(user_input)
                     
-                    if audio_file:
-                        col_a, col_b = st.columns([3, 1])
-                        with col_a:
-                            st.audio(audio_file, format="audio/mp3")
-                        with col_b:
-                            with open(audio_file, "rb") as f:
-                                st.download_button(
-                                    label="📥 Download",
-                                    data=f,
-                                    file_name="response.mp3",
-                                    mime="audio/mp3",
-                                    key="voice_download",
-                                    use_container_width=True
-                                )
-                        os.unlink(audio_file)
+                    if answer:
+                        st.markdown("---")
+                        st.markdown("### 🤖 Bot Response:")
+                        st.write(answer)
+                        
+                        with st.spinner("🔊 Generating voice response..."):
+                            tts_file = text_to_speech(answer)
+                        
+                        if tts_file:
+                            col_a, col_b = st.columns([3, 1])
+                            with col_a:
+                                st.audio(tts_file, format="audio/mp3")
+                            with col_b:
+                                with open(tts_file, "rb") as f:
+                                    st.download_button(
+                                        label="📥 Download",
+                                        data=f,
+                                        file_name="response.mp3",
+                                        mime="audio/mp3",
+                                        key="voice_download",
+                                        use_container_width=True
+                                    )
+                            os.unlink(tts_file)
+    
+    # Clear button
+    if st.button("🔄 Clear Recording", use_container_width=True):
+        st.session_state.audio_bytes = None
+        st.rerun()
 
 with tab2:
     st.subheader("Text Input")
@@ -217,14 +179,14 @@ with tab2:
                 st.write(answer)
                 
                 with st.spinner("🔊 Generating voice..."):
-                    audio_file = text_to_speech(answer)
+                    tts_file = text_to_speech(answer)
                 
-                if audio_file:
+                if tts_file:
                     col_a, col_b = st.columns([3, 1])
                     with col_a:
-                        st.audio(audio_file, format="audio/mp3")
+                        st.audio(tts_file, format="audio/mp3")
                     with col_b:
-                        with open(audio_file, "rb") as f:
+                        with open(tts_file, "rb") as f:
                             st.download_button(
                                 label="📥 Download",
                                 data=f,
@@ -233,9 +195,20 @@ with tab2:
                                 key="text_download",
                                 use_container_width=True
                             )
-                    os.unlink(audio_file)
+                    os.unlink(tts_file)
         else:
             st.warning("Please enter some text first.")
 
+# Troubleshooting section
+with st.expander("🔧 Troubleshooting"):
+    st.markdown("""
+    ### If recording doesn't work:
+    - **Browser Permissions**: Ensure mic access is granted (check site settings).
+    - **HTTPS Required**: Use HTTPS (Streamlit Cloud enforces this).
+    - **No Audio Detected**: Speak clearly; test mic in another app/site.
+    - **Transcription Fails**: Google STT needs internet; try shorter clips.
+    - **Component Issues**: Update `streamlit-mic-recorder` in requirements.txt.
+    """)
+
 st.markdown("---")
-st.caption("Powered by OpenRouter")
+st.caption("Powered by OpenRouter & streamlit-mic-recorder")
