@@ -1,130 +1,127 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+import av
 import requests
+import json
+import os
 from gtts import gTTS
 import tempfile
-import os
-import speech_recognition as sr
-from dotenv import load_dotenv
-from st_audiorec import st_audiorec  # ✅ browser-based recorder
 
-# -----------------------------
-# Load API key from .env file
-# -----------------------------
-load_dotenv()
-API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-# OpenRouter API endpoint
+# ========================
+# CONFIG
+# ========================
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+MODEL = "gpt-4o-mini"
 
-st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
-st.title("🎙️ Voice Bot")
-st.write("Chat by recording your voice or typing below.")
+st.title("🎤 AI Voice & Text Bot")
 
-# -----------------------------
-# Helper functions
-# -----------------------------
-def get_response(prompt):
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "openai/gpt-4o-mini",
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
-    except Exception as e:
-        st.error(f"❌ API Error: {e}")
-        return None
+# ========================
+# AUDIO CAPTURE CLASS
+# ========================
+class AudioProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.frames = []
 
-def text_to_speech(text):
-    try:
-        tts = gTTS(text)
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        tts.save(temp_file.name)
-        return temp_file.name
-    except Exception as e:
-        st.error(f"❌ TTS Error: {e}")
-        return None
+    def recv_audio(self, frame: av.AudioFrame) -> av.AudioFrame:
+        self.frames.append(frame.to_ndarray())
+        return frame
 
-# -----------------------------
-# Tabs
-# -----------------------------
-tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
+# ========================
+# SESSION STATE
+# ========================
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
 
-with tab1:
-    st.subheader("Record your voice (browser mic)")
+# ========================
+# TABS: Text Input vs Voice Input
+# ========================
+tab_text, tab_voice = st.tabs(["📝 Text Input", "🎤 Voice Input"])
 
-    wav_audio_data = st_audiorec()  # ✅ recorder widget
+# ------------------------
+# TEXT INPUT TAB
+# ------------------------
+with tab_text:
+    user_text = st.text_area("Type your message:", height=150, placeholder="Ask me anything...")
 
-    if wav_audio_data is not None:
-        st.audio(wav_audio_data, format="audio/wav")
-        
-        # Save audio to temp file for SpeechRecognition
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        with open(temp_file.name, "wb") as f:
-            f.write(wav_audio_data)
-        
-        if st.button("📝 Transcribe & Get Response", type="primary"):
+    if st.button("Send Text"):
+        if user_text.strip():
+            st.session_state["messages"].append({"role": "user", "content": user_text})
+            
+            # Call OpenRouter API
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            data = {"model": MODEL, "messages": st.session_state["messages"]}
+            response = requests.post(OPENROUTER_URL, headers=headers, data=json.dumps(data))
+            
+            if response.status_code == 200:
+                bot_reply = response.json()["choices"][0]["message"]["content"]
+                st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
+            else:
+                st.error(f"API Error: {response.text}")
+
+# ------------------------
+# VOICE INPUT TAB
+# ------------------------
+with tab_voice:
+    st.info("🎧 Speak into your microphone below")
+    ctx = webrtc_streamer(
+        key="voice-bot",
+        mode=WebRtcMode.SENDRECV,
+        audio_receiver_size=256,
+        media_stream_constraints={"audio": True, "video": False},
+        audio_processor_factory=AudioProcessor,
+    )
+
+    if st.button("Transcribe & Send"):
+        if ctx.audio_processor and ctx.audio_processor.frames:
+            # Save temporary WAV
+            import numpy as np
+            import soundfile as sf
+
+            audio_np = np.concatenate(ctx.audio_processor.frames, axis=0)
+            temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            sf.write(temp_wav.name, audio_np, 48000)  # sample rate may vary
+            temp_wav.close()
+
+            # Transcribe using SpeechRecognition
+            import speech_recognition as sr
             recognizer = sr.Recognizer()
-            with sr.AudioFile(temp_file.name) as source:
+            with sr.AudioFile(temp_wav.name) as source:
                 audio_data = recognizer.record(source)
                 try:
-                    user_input = recognizer.recognize_google(audio_data, language="en-US")
-                    st.markdown("### 🎤 You said:")
-                    st.info(f"**\"{user_input}\"**")
+                    user_input = recognizer.recognize_google(audio_data)
+                    st.markdown(f"**🧑 You said:** {user_input}")
+                    st.session_state["messages"].append({"role": "user", "content": user_input})
 
-                    with st.spinner("🤔 Getting response..."):
-                        answer = get_response(user_input)
+                    # Call OpenRouter API
+                    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+                    data = {"model": MODEL, "messages": st.session_state["messages"]}
+                    response = requests.post(OPENROUTER_URL, headers=headers, data=json.dumps(data))
+                    if response.status_code == 200:
+                        bot_reply = response.json()["choices"][0]["message"]["content"]
+                        st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
+                        st.markdown(f"**🤖 Bot:** {bot_reply}")
 
-                    if answer:
-                        st.markdown("---")
-                        st.markdown("### 🤖 Bot Response:")
-                        st.write(answer)
-
-                        # Generate audio response
-                        audio_file = text_to_speech(answer)
-                        if audio_file:
-                            st.audio(audio_file, format="audio/mp3")
-                            with open(audio_file, "rb") as file:
-                                st.download_button(
-                                    label="📥 Download",
-                                    data=file,
-                                    file_name="response.mp3",
-                                    mime="audio/mp3"
-                                )
-                            os.unlink(audio_file)
+                        # Optional: Text-to-speech
+                        tts_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                        tts = gTTS(bot_reply)
+                        tts.save(tts_file.name)
+                        st.audio(tts_file.name)
+                        tts_file.close()
+                    else:
+                        st.error(f"API Error: {response.text}")
                 except sr.UnknownValueError:
-                    st.error("❌ Could not understand the audio")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
+                    st.error("❌ Could not understand the audio.")
+            os.unlink(temp_wav.name)
 
-with tab2:
-    st.subheader("Type your message")
-    user_text = st.text_area("Message:", height=150)
-    if st.button("Send Text", type="primary"):
-        if user_text:
-            with st.spinner("🤔 Thinking..."):
-                answer = get_response(user_text)
-            if answer:
-                st.markdown("### 🤖 Bot Response:")
-                st.write(answer)
-
-                audio_file = text_to_speech(answer)
-                if audio_file:
-                    st.audio(audio_file, format="audio/mp3")
-                    with open(audio_file, "rb") as file:
-                        st.download_button(
-                            label="📥 Download",
-                            data=file,
-                            file_name="response.mp3",
-                            mime="audio/mp3"
-                        )
-                    os.unlink(audio_file)
-
+# ------------------------
+# Display chat history
+# ------------------------
 st.markdown("---")
-st.caption("💡 Tip: Browser mic recording works on Render without system libraries.")
+st.subheader("💬 Chat History")
+for msg in st.session_state["messages"]:
+    role = "🧑 You" if msg["role"] == "user" else "🤖 Bot"
+    st.markdown(f"**{role}:** {msg['content']}")
