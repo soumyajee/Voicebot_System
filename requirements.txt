@@ -4,4 +4,4 @@ requests
 gtts
 speechrecognition
 numpy
-pyaudio
+sounddevice
