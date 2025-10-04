@@ -108,7 +108,7 @@ with tab1:
     
     with col1:
         # Use mic_recorder with supported parameters
-        audio_bytes = mic_recorder(
+        audio_data = mic_recorder(
             start_prompt="🎤 Start Recording",
             stop_prompt="🛑 Stop Recording",
             key="mic_recorder"
@@ -121,48 +121,58 @@ with tab1:
             st.rerun()
     
     # Process recorded audio
-    if audio_bytes:
-        st.session_state.audio_bytes = audio_bytes
-        st.success("✅ Recording complete!")
-        
-        # Play back the recording
-        st.audio(audio_bytes, format="audio/wav")
-        
-        # Transcribe button
-        if st.button("📝 Transcribe & Get Response", type="primary", use_container_width=True):
-            with st.spinner("🔄 Transcribing your speech..."):
-                user_input = transcribe_audio(audio_bytes)
+    if audio_data:
+        # Extract bytes from dictionary
+        try:
+            audio_bytes = audio_data.get('bytes', audio_data.get('data', None))
+            if not audio_bytes:
+                st.error("❌ No audio data found in the recorder output.")
+                st.session_state.audio_bytes = None
+            else:
+                st.session_state.audio_bytes = audio_bytes
+                st.success("✅ Recording complete!")
                 
-                if user_input:
-                    st.markdown("### 🎤 You said:")
-                    st.info(f'"{user_input}"')
-                    
-                    with st.spinner("🤔 Getting AI response..."):
-                        answer = get_response(user_input)
-                    
-                    if answer:
-                        st.markdown("---")
-                        st.markdown("### 🤖 Bot Response:")
-                        st.write(answer)
+                # Play back the recording
+                st.audio(audio_bytes, format="audio/wav")
+                
+                # Transcribe button
+                if st.button("📝 Transcribe & Get Response", type="primary", use_container_width=True):
+                    with st.spinner("🔄 Transcribing your speech..."):
+                        user_input = transcribe_audio(audio_bytes)
                         
-                        with st.spinner("🔊 Generating voice response..."):
-                            tts_file = text_to_speech(answer)
-                        
-                        if tts_file:
-                            col_a, col_b = st.columns([3, 1])
-                            with col_a:
-                                st.audio(tts_file, format="audio/mp3")
-                            with col_b:
-                                with open(tts_file, "rb") as f:
-                                    st.download_button(
-                                        label="📥 Download",
-                                        data=f,
-                                        file_name="response.mp3",
-                                        mime="audio/mp3",
-                                        key="voice_download",
-                                        use_container_width=True
-                                    )
-                            os.unlink(tts_file)
+                        if user_input:
+                            st.markdown("### 🎤 You said:")
+                            st.info(f'"{user_input}"')
+                            
+                            with st.spinner("🤔 Getting AI response..."):
+                                answer = get_response(user_input)
+                            
+                            if answer:
+                                st.markdown("---")
+                                st.markdown("### 🤖 Bot Response:")
+                                st.write(answer)
+                                
+                                with st.spinner("🔊 Generating voice response..."):
+                                    tts_file = text_to_speech(answer)
+                                
+                                if tts_file:
+                                    col_a, col_b = st.columns([3, 1])
+                                    with col_a:
+                                        st.audio(tts_file, format="audio/mp3")
+                                    with col_b:
+                                        with open(tts_file, "rb") as f:
+                                            st.download_button(
+                                                label="📥 Download",
+                                                data=f,
+                                                file_name="response.mp3",
+                                                mime="audio/mp3",
+                                                key="voice_download",
+                                                use_container_width=True
+                                            )
+                                    os.unlink(tts_file)
+        except AttributeError:
+            st.error("❌ Invalid audio data format. Please try recording again.")
+            st.session_state.audio_bytes = None
 
 with tab2:
     st.subheader("Text Input")
@@ -207,6 +217,7 @@ with st.expander("🔧 Troubleshooting"):
     - **No Audio Detected**: Speak clearly; test mic in another app/site.
     - **Transcription Fails**: Google STT needs internet; try shorter clips (10-30s).
     - **Component Issues**: Ensure `streamlit-mic-recorder==0.0.8` is in requirements.txt.
+    - **Invalid Data**: If errors persist, clear recording and try again.
     - **Streamlit Cloud**: Verify package versions match locally and on Cloud.
     """)
 
