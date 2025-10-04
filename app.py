@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # -----------------------------
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Add this for Whisper
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -50,6 +50,7 @@ def audio_recorder_component():
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const base64Audio = reader.result.split(',')[1];
+                    // Send data back to Streamlit
                     window.parent.postMessage({
                         type: 'streamlit:setComponentValue',
                         value: base64Audio
@@ -140,7 +141,8 @@ def audio_recorder_component():
     </div>
     """
     
-    audio_data = components.html(audio_html, height=200)
+    # Return the component with a unique key
+    audio_data = components.html(audio_html, height=200, key="audio_recorder")
     return audio_data
 
 # Microphone setup guide
@@ -248,48 +250,51 @@ with tab1:
     # Audio recorder component
     audio_data = audio_recorder_component()
     
-    # Process audio when received
-    if audio_data and audio_data != st.session_state.processed_audio:
+    # Process audio when received - Check if audio_data is a string (base64)
+    if audio_data and isinstance(audio_data, str) and audio_data != st.session_state.processed_audio:
         st.session_state.processed_audio = audio_data
         
         # Decode and play audio
-        audio_bytes = base64.b64decode(audio_data)
-        st.audio(audio_bytes, format="audio/webm")
-        
-        # Transcribe and get response
-        with st.spinner("🔄 Transcribing your speech..."):
-            user_input = transcribe_audio_whisper(audio_data)
+        try:
+            audio_bytes = base64.b64decode(audio_data)
+            st.audio(audio_bytes, format="audio/webm")
             
-            if user_input:
-                st.markdown("### 🎤 You said:")
-                st.info(f"**\"{user_input}\"**")
+            # Transcribe and get response
+            with st.spinner("🔄 Transcribing your speech..."):
+                user_input = transcribe_audio_whisper(audio_data)
                 
-                with st.spinner("🤔 Getting AI response..."):
-                    answer = get_response(user_input)
-                
-                if answer:
-                    st.markdown("---")
-                    st.markdown("### 🤖 Bot Response:")
-                    st.write(answer)
+                if user_input:
+                    st.markdown("### 🎤 You said:")
+                    st.info(f"**\"{user_input}\"**")
                     
-                    # Generate audio response
-                    with st.spinner("🔊 Generating voice response..."):
-                        audio_file = text_to_speech(answer)
+                    with st.spinner("🤔 Getting AI response..."):
+                        answer = get_response(user_input)
                     
-                    if audio_file:
-                        col_a, col_b = st.columns([3, 1])
-                        with col_a:
-                            st.audio(audio_file, format="audio/mp3")
-                        with col_b:
-                            with open(audio_file, "rb") as file:
-                                st.download_button(
-                                    label="📥 Download",
-                                    data=file,
-                                    file_name="response.mp3",
-                                    mime="audio/mp3",
-                                    use_container_width=True
-                                )
-                        os.unlink(audio_file)
+                    if answer:
+                        st.markdown("---")
+                        st.markdown("### 🤖 Bot Response:")
+                        st.write(answer)
+                        
+                        # Generate audio response
+                        with st.spinner("🔊 Generating voice response..."):
+                            audio_file = text_to_speech(answer)
+                        
+                        if audio_file:
+                            col_a, col_b = st.columns([3, 1])
+                            with col_a:
+                                st.audio(audio_file, format="audio/mp3")
+                            with col_b:
+                                with open(audio_file, "rb") as file:
+                                    st.download_button(
+                                        label="📥 Download",
+                                        data=file,
+                                        file_name="response.mp3",
+                                        mime="audio/mp3",
+                                        use_container_width=True
+                                    )
+                            os.unlink(audio_file)
+        except Exception as e:
+            st.error(f"❌ Error processing audio: {e}")
 
 with tab2:
     st.subheader("Text Input")
