@@ -3,15 +3,16 @@ import requests
 from gtts import gTTS
 import tempfile
 import os
+import io  # ✅ Added
 import speech_recognition as sr
-from streamlit_audio_recorder import audio_recorder  # ✅ Replace PyAudio
-from dotenv import load_dotenv  # ✅ for .env support
+from audio_recorder_streamlit import audio_recorder  # ✅ Fixed import
+from dotenv import load_dotenv
 
 # -----------------------------
 # Load API key from .env file
 # -----------------------------
 load_dotenv()
-API_KEY = os.getenv("OPENROUTER_API_KEY")  # ✅ safely loaded from .env
+API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -89,7 +90,7 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Live Recording from Browser Microphone")
     
-    # Record audio using streamlit-audio-recorder
+    # Record audio using audio-recorder-streamlit
     audio_bytes = audio_recorder(
         text="Click to record",
         recording_color="#e8b923",
