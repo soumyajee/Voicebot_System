@@ -1,14 +1,8 @@
 streamlit
-streamlit-webrtc
 requests
 gtts
-speechrecognition
-numpy
-sounddevice
 python-dotenv
-soundfile
-audiorecorder
-audio-recorder-streamlit
+
 
 
 
