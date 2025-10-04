@@ -6,6 +6,7 @@ import os
 import speech_recognition as sr
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
+import wave
 
 # Load API key from .env file
 load_dotenv()
@@ -29,6 +30,7 @@ with st.expander("📱 Microphone Setup (Important!)"):
     3. **Use headphones** if in a noisy environment.
     4. Recording happens in-browser—no server mic needed.
     5. **Click 'Start Recording'** to begin, then **'Stop'** to process.
+    6. Keep recordings short (5-30s) for best transcription results.
     """)
 
 # Initialize session state for audio
@@ -68,15 +70,32 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
+# Function to save audio bytes as a valid WAV file
+def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            with wave.open(tmp_file.name, 'wb') as wf:
+                wf.setnchannels(channels)  # Mono
+                wf.setsampwidth(sample_width)  # 2 bytes (16-bit)
+                wf.setframerate(sample_rate)  # 16kHz
+                wf.writeframes(audio_bytes)
+            return tmp_file.name
+    except Exception as e:
+        st.error(f"❌ Error saving WAV file: {e}")
+        return None
+
 # Function to transcribe audio bytes
 def transcribe_audio(audio_bytes):
     if not audio_bytes:
         return None
     try:
-        # Save bytes to temp WAV file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_file_path = tmp_file.name
+        # Save bytes as a valid WAV file
+        tmp_file_path = save_as_wav(audio_bytes)
+        if not tmp_file_path:
+            return None
+
+        # Debug: Verify file exists and size
+        st.write(f"Debug: Saved WAV file at {tmp_file_path}, size: {os.path.getsize(tmp_file_path)} bytes")
 
         # Transcribe with Google STT
         recognizer = sr.Recognizer()
@@ -93,9 +112,11 @@ def transcribe_audio(audio_bytes):
         return user_input
     except sr.UnknownValueError:
         st.error("❌ Could not understand the audio. Please try speaking clearly.")
+        os.unlink(tmp_file_path) if os.path.exists(tmp_file_path) else None
         return None
     except Exception as e:
         st.error(f"❌ Transcription Error: {e}")
+        os.unlink(tmp_file_path) if os.path.exists(tmp_file_path) else None
         return None
 
 # Main interface tabs
@@ -131,6 +152,9 @@ with tab1:
             else:
                 st.session_state.audio_bytes = audio_bytes
                 st.success("✅ Recording complete!")
+                
+                # Debug: Show audio bytes length
+                st.write(f"Debug: Audio bytes length: {len(audio_bytes)}")
                 
                 # Play back the recording
                 st.audio(audio_bytes, format="audio/wav")
@@ -215,9 +239,12 @@ with st.expander("🔧 Troubleshooting"):
     - **Browser Permissions**: Ensure mic access is granted (check site settings).
     - **HTTPS Required**: Use HTTPS (Streamlit Cloud enforces this).
     - **No Audio Detected**: Speak clearly; test mic in another app/site.
-    - **Transcription Fails**: Google STT needs internet; try shorter clips (10-30s).
+    - **Transcription Fails**: 
+        - Keep recordings short (5-30s).
+        - Ensure internet for Google STT.
+        - Check if audio is valid WAV (debug output shows file size).
     - **Component Issues**: Ensure `streamlit-mic-recorder==0.0.8` is in requirements.txt.
-    - **Invalid Data**: If errors persist, clear recording and try again.
+    - **Invalid WAV Format**: If transcription fails, try shorter recordings or switch to `audio-recorder-streamlit`.
     - **Streamlit Cloud**: Verify package versions match locally and on Cloud.
     """)
 
