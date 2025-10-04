@@ -9,5 +9,6 @@ dtw-python
 soundfile
 scipy
 fastdtw
+streamlit-mic-recorder
 
 
