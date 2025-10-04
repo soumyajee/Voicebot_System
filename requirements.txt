@@ -10,5 +10,6 @@ soundfile
 scipy
 fastdtw
 streamlit-mic-recorder
+sounddevice
 
 
