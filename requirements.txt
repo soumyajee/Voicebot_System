@@ -2,6 +2,7 @@ streamlit
 requests
 gtts
 python-dotenv
+st-audiorec
 
 
 
