@@ -1,19 +1,12 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 from gtts import gTTS
 import tempfile
 import os
-import io
+import base64
 import speech_recognition as sr
 from dotenv import load_dotenv
-
-# Try to import audio_recorder_streamlit, fall back to file uploader if not available
-try:
-    from audio_recorder_streamlit import audio_recorder
-    AUDIO_RECORDER_AVAILABLE = True
-except ImportError:
-    AUDIO_RECORDER_AVAILABLE = False
-    st.warning("⚠️ Audio recorder module not available. Using file upload instead.")
 
 # -----------------------------
 # Load API key from .env file
@@ -27,30 +20,154 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Live Voice Bot")
-st.write("Record or upload audio to interact! 🎧")
+st.write("Record audio directly from your browser! 🎧")
+
+# Custom audio recorder using HTML5 MediaRecorder API
+def audio_recorder_component():
+    audio_html = """
+    <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    let isRecording = false;
+    
+    const recordButton = document.getElementById('recordButton');
+    const stopButton = document.getElementById('stopButton');
+    const status = document.getElementById('status');
+    
+    recordButton.addEventListener('click', async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+            
+            mediaRecorder.ondataavailable = (event) => {
+                audioChunks.push(event.data);
+            };
+            
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                    const base64Audio = reader.result.split(',')[1];
+                    window.parent.postMessage({
+                        type: 'streamlit:setComponentValue',
+                        value: base64Audio
+                    }, '*');
+                };
+                stream.getTracks().forEach(track => track.stop());
+            };
+            
+            mediaRecorder.start();
+            isRecording = true;
+            recordButton.disabled = true;
+            stopButton.disabled = false;
+            status.textContent = '🔴 Recording...';
+            status.style.color = '#ff4444';
+        } catch (err) {
+            status.textContent = '❌ Microphone access denied';
+            status.style.color = '#ff4444';
+            console.error('Error:', err);
+        }
+    });
+    
+    stopButton.addEventListener('click', () => {
+        if (mediaRecorder && isRecording) {
+            mediaRecorder.stop();
+            isRecording = false;
+            recordButton.disabled = false;
+            stopButton.disabled = true;
+            status.textContent = '✅ Recording complete!';
+            status.style.color = '#00cc00';
+        }
+    });
+    </script>
+    
+    <style>
+        .recorder-container {
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        }
+        .btn {
+            padding: 15px 30px;
+            margin: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #recordButton {
+            background: #ff4444;
+            color: white;
+        }
+        #recordButton:hover:not(:disabled) {
+            background: #ff6666;
+        }
+        #stopButton {
+            background: #4CAF50;
+            color: white;
+        }
+        #stopButton:hover:not(:disabled) {
+            background: #66bb6a;
+        }
+        #status {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            min-height: 30px;
+        }
+    </style>
+    
+    <div class="recorder-container">
+        <button id="recordButton" class="btn">🎙️ Start Recording</button>
+        <button id="stopButton" class="btn" disabled>⏹️ Stop Recording</button>
+        <div id="status">Ready to record</div>
+    </div>
+    """
+    
+    audio_data = components.html(audio_html, height=200)
+    return audio_data
 
 # Microphone setup guide
-with st.expander("📱 Audio Input Setup (Important!)"):
+with st.expander("📱 How to Use (Important!)"):
     st.markdown("""
-    ### Two Ways to Use:
-    1. **Live Recording** (if available): Click record button and allow microphone access.
-    2. **File Upload**: Upload a pre-recorded audio file (WAV, MP3, M4A).
+    ### Steps:
+    1. Click **"Start Recording"** button below
+    2. **Allow** microphone access when browser prompts you
+    3. Speak your message clearly
+    4. Click **"Stop Recording"** when done
+    5. Wait for transcription and response
     
     ### Tips:
-    - Use Chrome, Firefox, or Edge for best compatibility.
-    - Speak clearly into your device's mic.
-    - For file upload: Keep recordings under 1 minute for best results.
-    - Check browser permissions if recording doesn't work.
+    - Use Chrome, Firefox, or Edge (Safari may have issues)
+    - Ensure HTTPS connection (required for microphone access)
+    - Speak clearly and avoid background noise
+    - Keep recordings under 30 seconds for best results
     """)
 
 # Initialize session state
-if 'audio_file' not in st.session_state:
-    st.session_state.audio_file = None
+if 'processed_audio' not in st.session_state:
+    st.session_state.processed_audio = None
 
 # Function to get response from OpenRouter
 def get_response(prompt):
     if not API_KEY:
-        st.error("❌ API key not found. Please set OPENROUTER_API_KEY in your .env file.")
+        st.error("❌ API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
         return None
     
     headers = {
@@ -81,115 +198,96 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# Function to transcribe audio from bytes
-def transcribe_audio(audio_bytes):
+# Function to transcribe audio from base64
+def transcribe_audio(audio_base64):
     recognizer = sr.Recognizer()
     try:
-        # Save bytes to temporary WAV file for SpeechRecognition
+        # Decode base64 to bytes
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Save to temporary WAV file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
         
+        # Transcribe
         with sr.AudioFile(tmp_file_path) as source:
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
             audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data, language="en-US")
         
-        # Clean up temp file
+        # Clean up
         os.unlink(tmp_file_path)
         return text
         
     except sr.UnknownValueError:
-        st.error("❌ Could not understand the audio. Please speak clearly and reduce noise.")
+        st.error("❌ Could not understand the audio. Please speak clearly and try again.")
         return None
     except sr.RequestError as e:
-        st.error(f"❌ Speech recognition error: {e}")
+        st.error(f"❌ Speech recognition service error: {e}")
         return None
     except Exception as e:
         st.error(f"❌ Transcription error: {e}")
         return None
 
-# Function to process audio (used by both recorder and uploader)
-def process_audio(audio_bytes):
-    if not audio_bytes:
-        return
-    
-    st.success("✅ Audio received!")
-    st.audio(audio_bytes, format="audio/wav")
-    
-    # Transcribe and get response
-    with st.spinner("🔄 Transcribing your speech..."):
-        user_input = transcribe_audio(audio_bytes)
-        if user_input:
-            st.markdown("### 🎤 You said:")
-            st.info(f"**\"{user_input}\"**")
-            
-            with st.spinner("🤔 Getting response..."):
-                answer = get_response(user_input)
-            
-            if answer:
-                st.markdown("---")
-                st.markdown("### 🤖 Bot Response:")
-                st.write(answer)
-                
-                # Generate audio response
-                audio_file = text_to_speech(answer)
-                if audio_file:
-                    col_a, col_b = st.columns([3, 1])
-                    with col_a:
-                        st.audio(audio_file, format="audio/mp3")
-                    with col_b:
-                        with open(audio_file, "rb") as file:
-                            st.download_button(
-                                label="📥 Download",
-                                data=file,
-                                file_name="response.mp3",
-                                mime="audio/mp3",
-                                use_container_width=True
-                            )
-                    os.unlink(audio_file)
-
 # Main interface tabs
 tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 
 with tab1:
-    st.subheader("Audio Input")
+    st.subheader("Browser-Based Audio Recording")
     
-    if AUDIO_RECORDER_AVAILABLE:
-        # Use audio recorder if available
-        st.write("**Live Recording from Browser Microphone**")
-        audio_bytes = audio_recorder(
-            text="Click to record",
-            recording_color="#e8b923",
-            neutral_color="#6aa36f",
-            key="audio_recorder"
-        )
+    # Audio recorder component
+    audio_data = audio_recorder_component()
+    
+    # Process audio when received
+    if audio_data and audio_data != st.session_state.processed_audio:
+        st.session_state.processed_audio = audio_data
         
-        if audio_bytes:
-            process_audio(audio_bytes)
-        else:
-            st.info("👆 Click to start recording (allow mic access).")
-    else:
-        # Fallback to file uploader
-        st.write("**Upload Audio File**")
-        uploaded_audio = st.file_uploader(
-            "Choose an audio file",
-            type=['wav', 'mp3', 'm4a', 'ogg'],
-            help="Upload a pre-recorded audio file (WAV recommended for best results)"
-        )
+        # Decode and play audio
+        audio_bytes = base64.b64decode(audio_data)
+        st.audio(audio_bytes, format="audio/wav")
         
-        if uploaded_audio:
-            audio_bytes = uploaded_audio.read()
-            process_audio(audio_bytes)
-        else:
-            st.info("👆 Upload an audio file to get started.")
+        # Transcribe and get response
+        with st.spinner("🔄 Transcribing your speech..."):
+            user_input = transcribe_audio(audio_data)
+            
+            if user_input:
+                st.markdown("### 🎤 You said:")
+                st.info(f"**\"{user_input}\"**")
+                
+                with st.spinner("🤔 Getting AI response..."):
+                    answer = get_response(user_input)
+                
+                if answer:
+                    st.markdown("---")
+                    st.markdown("### 🤖 Bot Response:")
+                    st.write(answer)
+                    
+                    # Generate audio response
+                    with st.spinner("🔊 Generating voice response..."):
+                        audio_file = text_to_speech(answer)
+                    
+                    if audio_file:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.audio(audio_file, format="audio/mp3")
+                        with col_b:
+                            with open(audio_file, "rb") as file:
+                                st.download_button(
+                                    label="📥 Download",
+                                    data=file,
+                                    file_name="response.mp3",
+                                    mime="audio/mp3",
+                                    use_container_width=True
+                                )
+                        os.unlink(audio_file)
 
 with tab2:
     st.subheader("Text Input")
     user_text = st.text_area("Type your message:", height=150, placeholder="Ask me anything...")
     
     if st.button("Send Text", type="primary"):
-        if user_text:
+        if user_text.strip():
             with st.spinner("🤔 Thinking..."):
                 answer = get_response(user_text)
             
@@ -198,7 +296,9 @@ with tab2:
                 st.write(answer)
                 
                 # Generate audio
-                audio_file = text_to_speech(answer)
+                with st.spinner("🔊 Generating voice..."):
+                    audio_file = text_to_speech(answer)
+                
                 if audio_file:
                     col_a, col_b = st.columns([3, 1])
                     with col_a:
@@ -220,29 +320,28 @@ with tab2:
 with st.expander("🔧 Troubleshooting"):
     st.markdown("""
     ### Common Issues:
-    - **No audio recording?** Try uploading a file instead, or allow mic in browser (HTTPS required).
-    - **Transcription fails?** Speak louder, reduce noise, try shorter clips. Use WAV format for uploads.
-    - **API key errors?** Ensure `OPENROUTER_API_KEY` is set in .env (local) or in environment variables (deployment).
-    - **Module not found?** Check that all packages in requirements.txt are installed.
-    - **Deploy fails?** Verify requirements.txt is in root directory. Check deployment logs.
-    - **Still stuck?** Share full error logs.
     
-    ### Requirements Check:
+    **Microphone not working?**
+    - Make sure you clicked "Allow" when browser asked for mic permission
+    - Check browser settings: Site Settings → Microphone → Allow
+    - HTTPS is required for microphone access (works on Streamlit Cloud/Render)
+    - Try a different browser (Chrome recommended)
+    
+    **Recording but no transcription?**
+    - Speak louder and more clearly
+    - Reduce background noise
+    - Keep recordings under 30 seconds
+    - Try recording again
+    
+    **API errors?**
+    - Ensure `OPENROUTER_API_KEY` is set in environment variables
+    - Check your API key is valid and has credits
+    
+    **Deployment issues?**
+    - This code works on Streamlit Cloud and Render (HTTPS enabled)
+    - No external packages needed for audio recording
+    - Uses native browser MediaRecorder API
     """)
-    
-    # Show which packages are available
-    packages_status = {
-        "streamlit": True,
-        "gtts": True,
-        "speech_recognition": True,
-        "requests": True,
-        "python-dotenv": True,
-        "audio-recorder-streamlit": AUDIO_RECORDER_AVAILABLE
-    }
-    
-    for package, status in packages_status.items():
-        status_icon = "✅" if status else "❌"
-        st.text(f"{status_icon} {package}")
 
 st.markdown("---")
-st.caption("💡 Tip: Works best with clear audio and minimal background noise!")
+st.caption("💡 Powered by HTML5 MediaRecorder API - No external dependencies needed!")
