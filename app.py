@@ -5,7 +5,7 @@ import tempfile
 import os
 import speech_recognition as sr
 from dotenv import load_dotenv
-from streamlit_mic_recorder import mic_recorder  # New: Browser-based recorder
+from streamlit_mic_recorder import mic_recorder
 
 # Load API key from .env file
 load_dotenv()
@@ -28,6 +28,7 @@ with st.expander("📱 Microphone Setup (Important!)"):
     2. **Test** your mic in browser settings (e.g., Chrome: chrome://settings/content/microphone).
     3. **Use headphones** if in a noisy environment.
     4. Recording happens in-browser—no server mic needed.
+    5. **Click 'Start Recording'** to begin, then **'Stop'** to process.
     """)
 
 # Initialize session state for audio
@@ -67,7 +68,7 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# Function to transcribe audio bytes (using speech_recognition)
+# Function to transcribe audio bytes
 def transcribe_audio(audio_bytes):
     if not audio_bytes:
         return None
@@ -103,28 +104,31 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Browser-Based Voice Recording")
     
-    # Recording duration selector
-    record_duration = st.selectbox("Suggested Recording Duration (seconds)", [5, 10, 15, 30], index=1)
+    col1, col2 = st.columns([1, 1])
     
-    # Use the mic recorder component
-    audio_bytes = mic_recorder(
-        wake_word="record",  # Optional: Custom wake word (default is none)
-        recording_color="#e8b923",  # Visual feedback color
-        neutral_color="#6aa36f",  # Idle color
-        max_msec=record_duration * 1000,  # Limit duration
-        display_recording_text=True,  # Show "Recording..." text
-        wave_color="#e8b923"  # Waveform color
-    )
+    with col1:
+        # Use mic_recorder with supported parameters
+        audio_bytes = mic_recorder(
+            start_prompt="🎤 Start Recording",
+            stop_prompt="🛑 Stop Recording",
+            key="mic_recorder"
+        )
     
-    # Capture and display recorded audio
+    with col2:
+        # Clear button
+        if st.button("🔄 Clear Recording", use_container_width=True):
+            st.session_state.audio_bytes = None
+            st.rerun()
+    
+    # Process recorded audio
     if audio_bytes:
         st.session_state.audio_bytes = audio_bytes
-        st.success(f"✅ Recorded {len(audio_bytes)/ (record_duration * 16000 * 2):.1f}s of audio!")  # Rough duration estimate
+        st.success("✅ Recording complete!")
         
         # Play back the recording
         st.audio(audio_bytes, format="audio/wav")
         
-        # Transcribe button (manual trigger after recording)
+        # Transcribe button
         if st.button("📝 Transcribe & Get Response", type="primary", use_container_width=True):
             with st.spinner("🔄 Transcribing your speech..."):
                 user_input = transcribe_audio(audio_bytes)
@@ -159,11 +163,6 @@ with tab1:
                                         use_container_width=True
                                     )
                             os.unlink(tts_file)
-    
-    # Clear button
-    if st.button("🔄 Clear Recording", use_container_width=True):
-        st.session_state.audio_bytes = None
-        st.rerun()
 
 with tab2:
     st.subheader("Text Input")
@@ -206,8 +205,9 @@ with st.expander("🔧 Troubleshooting"):
     - **Browser Permissions**: Ensure mic access is granted (check site settings).
     - **HTTPS Required**: Use HTTPS (Streamlit Cloud enforces this).
     - **No Audio Detected**: Speak clearly; test mic in another app/site.
-    - **Transcription Fails**: Google STT needs internet; try shorter clips.
-    - **Component Issues**: Update `streamlit-mic-recorder` in requirements.txt.
+    - **Transcription Fails**: Google STT needs internet; try shorter clips (10-30s).
+    - **Component Issues**: Ensure `streamlit-mic-recorder==0.0.8` is in requirements.txt.
+    - **Streamlit Cloud**: Verify package versions match locally and on Cloud.
     """)
 
 st.markdown("---")
