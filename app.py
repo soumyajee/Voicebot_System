@@ -178,3 +178,4 @@ with st.expander("🔧 Troubleshooting"):
 
 st.markdown("---")
 st.caption("💡 Tip: Audio records client-side. No local mic setup needed!")
+
