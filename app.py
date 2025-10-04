@@ -8,7 +8,7 @@ import base64
 from dotenv import load_dotenv
 import librosa
 import numpy as np
-from dtw import dtw
+from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 import soundfile as sf
 
@@ -23,15 +23,12 @@ st.title("🎙️ Live Voice Bot")
 
 def preprocess_audio_manual(audio_bytes):
     try:
-        # Save audio bytes to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
         
-        # Load audio with librosa
         audio, sr = librosa.load(tmp_file_path, sr=None)
         
-        # Check audio properties
         duration = len(audio) / sr
         if duration < 0.5:
             os.unlink(tmp_file_path)
@@ -42,16 +39,13 @@ def preprocess_audio_manual(audio_bytes):
             st.warning("Audio is too quiet. Please speak louder or check your microphone.")
             return None, None
         
-        # Resample to 16kHz
         target_sr = 16000
         if sr != target_sr:
             audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
             sr = target_sr
         
-        # Normalize audio (scale to [-1, 1])
         audio = audio / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
         
-        # Save normalized audio back to bytes
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
             sf.write(tmp_out.name, audio, sr)
             with open(tmp_out.name, "rb") as f:
@@ -60,7 +54,6 @@ def preprocess_audio_manual(audio_bytes):
         os.unlink(tmp_file_path)
         os.unlink(tmp_out.name)
         
-        # Debug: Log audio properties
         st.write(f"Preprocessed audio: Duration={duration:.2f}s, Sample rate={sr}Hz, Max amplitude={np.max(np.abs(audio)):.2f}")
         
         return processed_audio, sr
@@ -103,12 +96,10 @@ def text_to_speech(text):
 
 def transcribe_audio_heuristic(audio_bytes):
     try:
-        # Preprocess audio
         processed_audio, sr = preprocess_audio_manual(audio_bytes)
         if processed_audio is None:
             return None
         
-        # Load preprocessed audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(processed_audio)
             tmp_file_path = tmp_file.name
@@ -116,23 +107,33 @@ def transcribe_audio_heuristic(audio_bytes):
         audio, sr = librosa.load(tmp_file_path, sr=16000)
         os.unlink(tmp_file_path)
         
-        # Segment audio into 1-second chunks
         chunk_length = sr  # 1 second
         chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
         
-        # Define vocabulary with precomputed MFCCs
-        # Replace with actual MFCCs from your audio samples
-        vocabulary = {
-            "hello": librosa.feature.mfcc(y=librosa.load("samples/hello.wav", sr=16000)[0], sr=16000, n_mfcc=13),
-            "world": librosa.feature.mfcc(y=librosa.load("samples/world.wav", sr=16000)[0], sr=16000, n_mfcc=13),
-            "help": librosa.feature.mfcc(y=librosa.load("samples/help.wav", sr=16000)[0], sr=16000, n_mfcc=13),
-            # Add more words
+        # Define vocabulary with error handling for missing files
+        vocabulary_files = {
+            "hello": "samples/hello.wav",
+            "world": "samples/world.wav",
+            "help": "samples/help.wav",
         }
+        vocabulary = {}
+        for word, file_path in vocabulary_files.items():
+            if os.path.exists(file_path):
+                try:
+                    audio_data, _ = librosa.load(file_path, sr=16000)
+                    vocabulary[word] = librosa.feature.mfcc(y=audio_data, sr=16000, n_mfcc=13)
+                except Exception as e:
+                    st.warning(f"Failed to load {file_path}: {e}")
+            else:
+                st.warning(f"Vocabulary file {file_path} not found. Skipping word '{word}'.")
         
-        # Transcribe each chunk
+        if not vocabulary:
+            st.error("No valid vocabulary files found. Please add WAV files to the 'samples/' folder.")
+            return "No vocabulary available"
+        
         transcription = []
         for chunk_idx, chunk in enumerate(chunks):
-            if len(chunk) < sr * 0.3:  # Skip chunks shorter than 0.3s
+            if len(chunk) < sr * 0.3:
                 continue
             mfccs = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
             best_word, best_dist = None, float('inf')
@@ -140,7 +141,7 @@ def transcribe_audio_heuristic(audio_bytes):
                 min_len = min(mfccs.shape[1], ref_mfcc.shape[1])
                 mfccs_trunc = mfccs[:, :min_len]
                 ref_mfcc_trunc = ref_mfcc[:, :min_len]
-                dist, _, _, _ = dtw(mfccs_trunc.T, ref_mfcc_trunc.T, dist=euclidean)
+                dist, _ = fastdtw(mfccs_trunc.T, ref_mfcc_trunc.T, dist=euclidean)
                 st.write(f"Chunk {chunk_idx+1}: DTW distance for '{word}': {dist:.2f}")
                 if dist < best_dist and dist < 50:  # Tune threshold
                     best_word, best_dist = word, dist
@@ -163,7 +164,6 @@ with tab1:
     if audio_bytes:
         st.audio(audio_bytes, format='audio/wav')
         
-        # Save for debugging
         with open("debug_audio.wav", "wb") as f:
             f.write(audio_bytes)
         st.write("Saved audio for debugging: debug_audio.wav")
@@ -197,7 +197,7 @@ with tab1:
                                     data=f,
                                     file_name="response.mp3",
                                     mime="audio/mp3",
-                                    key="voice_download",  # Unique key
+                                    key="voice_download",
                                     use_container_width=True
                                 )
                         os.unlink(audio_file)
@@ -229,7 +229,7 @@ with tab2:
                                 data=f,
                                 file_name="response.mp3",
                                 mime="audio/mp3",
-                                key="text_download",  # Unique key
+                                key="text_download",
                                 use_container_width=True
                             )
                     os.unlink(audio_file)
