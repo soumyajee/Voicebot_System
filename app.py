@@ -62,7 +62,7 @@ def transcribe_audio_openrouter(audio_bytes):
         with open(tmp_file_path, 'rb') as audio_file:
             files = {'file': ('audio.wav', audio_file, 'audio/wav')}
             headers = {'Authorization': f'Bearer {API_KEY}'}
-            data = {'model': 'openai/whisper-1'}
+            data = {'model': 'gladia/whisper-large-v3'}  # Changed from 'openai/whisper-1'
             
             response = requests.post(
                 OPENROUTER_AUDIO_URL,
@@ -85,7 +85,6 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Record Your Voice")
     
-    # This component handles recording properly
     audio_bytes = audio_recorder()
     
     if audio_bytes:
