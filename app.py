@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import requests
 from gtts import gTTS
@@ -209,4 +208,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("💡 Tip: Use your microphone to ask questions and hear spoken answers!")
-```
+
