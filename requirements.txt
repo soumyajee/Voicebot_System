@@ -8,6 +8,7 @@ sounddevice
 python-dotenv
 soundfile
 audiorecorder
-streamlit-audiorecorder==0.0.6
+streamlit-audio-recorder
+
 
 
