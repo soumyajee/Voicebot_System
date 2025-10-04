@@ -1,5 +1,5 @@
 import streamlit as st
-from st_audiorec import st_audiorec
+from audio_recorder_streamlit import audio_recorder
 import requests
 from gtts import gTTS
 import tempfile
@@ -86,13 +86,13 @@ with tab1:
     st.subheader("Record Your Voice")
     
     # This component handles recording properly
-    audio_data = st_audiorec()
+    audio_bytes = audio_recorder()
     
-    if audio_data is not None:
-        st.audio(audio_data, format='audio/wav')
+    if audio_bytes:
+        st.audio(audio_bytes, format='audio/wav')
         
         with st.spinner("🔄 Transcribing your speech..."):
-            user_input = transcribe_audio_openrouter(audio_data)
+            user_input = transcribe_audio_openrouter(audio_bytes)
             
             if user_input:
                 st.markdown("### 🎤 You said:")
