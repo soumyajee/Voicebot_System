@@ -6,11 +6,16 @@ import os
 import speech_recognition as sr
 import pyaudio
 import wave
-import threading
+from dotenv import load_dotenv  # ✅ for .env support
+
+# -----------------------------
+# Load API key from .env file
+# -----------------------------
+load_dotenv()
+API_KEY = os.getenv("OPENROUTER_API_KEY")  # ✅ safely loaded from .env
 
 # OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-API_KEY = "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"
 
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
@@ -295,3 +300,4 @@ with st.expander("🔧 Troubleshooting"):
 
 st.markdown("---")
 st.caption("💡 Tip: Select your preferred microphone from the dropdown and test it in system settings!")
+
