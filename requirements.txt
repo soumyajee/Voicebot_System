@@ -1,0 +1,7 @@
+streamlit
+streamlit-webrtc
+requests
+gtts
+speechrecognition
+numpy
+pyaudio
