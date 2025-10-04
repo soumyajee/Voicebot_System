@@ -6,12 +6,14 @@ import tempfile
 import os
 import base64
 from dotenv import load_dotenv
+import librosa
+import numpy as np
+import soundfile as sf
 
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_AUDIO_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
@@ -49,35 +51,46 @@ def text_to_speech(text):
         st.error(f"TTS Error: {e}")
         return None
 
-def transcribe_audio_openrouter(audio_bytes):
-    if not API_KEY:
-        st.error("API key not found.")
-        return None
-    
+def transcribe_audio_heuristic(audio_bytes):
     try:
+        # Save audio bytes to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
         
-        with open(tmp_file_path, 'rb') as audio_file:
-            files = {'file': ('audio.wav', audio_file, 'audio/wav')}
-            headers = {'Authorization': f'Bearer {API_KEY}'}
-            data = {'model': 'gladia/whisper-large-v3'}  # Changed from 'openai/whisper-1'
-            
-            response = requests.post(
-                OPENROUTER_AUDIO_URL,
-                headers=headers,
-                files=files,
-                data=data
-            )
-            response.raise_for_status()
-            result = response.json()
-        
+        # Load audio with librosa
+        audio, sr = librosa.load(tmp_file_path, sr=16000)  # Resample to 16kHz
         os.unlink(tmp_file_path)
-        return result.get('text', '')
+        
+        # Extract MFCC features
+        mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+        
+        # Simple heuristic: Map MFCC patterns to a small vocabulary
+        # This is a placeholder; in practice, you'd need a phoneme-to-text mapping
+        vocabulary = {
+            "hello": np.random.rand(13, 100),  # Dummy MFCC for "hello"
+            "world": np.random.rand(13, 100),  # Dummy MFCC for "world"
+            # Add more words with precomputed MFCCs for your use case
+        }
+        
+        # Compare MFCCs to vocabulary (simplified distance-based matching)
+        transcription = ""
+        for word, ref_mfcc in vocabulary.items():
+            # Resize MFCCs to match shape for comparison
+            min_len = min(mfccs.shape[1], ref_mfcc.shape[1])
+            mfccs_trunc = mfccs[:, :min_len]
+            ref_mfcc_trunc = ref_mfcc[:, :min_len]
+            distance = np.mean((mfccs_trunc - ref_mfcc_trunc) ** 2)
+            if distance < 0.1:  # Arbitrary threshold
+                transcription += word + " "
+        
+        if not transcription:
+            transcription = "Unknown speech (no matching words found)"
+        
+        return transcription.strip()
         
     except Exception as e:
-        st.error(f"Transcription error: {e}")
+        st.error(f"Heuristic Transcription error: {e}")
         return None
 
 tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
@@ -91,7 +104,7 @@ with tab1:
         st.audio(audio_bytes, format='audio/wav')
         
         with st.spinner("🔄 Transcribing your speech..."):
-            user_input = transcribe_audio_openrouter(audio_bytes)
+            user_input = transcribe_audio_heuristic(audio_bytes)
             
             if user_input:
                 st.markdown("### 🎤 You said:")
