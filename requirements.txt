@@ -8,5 +8,6 @@ scipy
 dtw-python
 soundfile
 scipy
+fastdtw
 
 
