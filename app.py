@@ -7,6 +7,8 @@ import speech_recognition as sr
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 import wave
+import numpy as np
+import sounddevice as sd  # For local debugging (optional, not needed on Cloud)
 
 # Load API key from .env file
 load_dotenv()
@@ -27,15 +29,17 @@ with st.expander("📱 Microphone Setup (Important!)"):
     ### Before Recording:
     1. **Allow** microphone access in your browser (popup will appear on first record).
     2. **Test** your mic in browser settings (e.g., Chrome: chrome://settings/content/microphone).
-    3. **Use headphones** if in a noisy environment.
+    3. **Use headphones** to reduce echo or noise.
     4. Recording happens in-browser—no server mic needed.
-    5. **Click 'Start Recording'** to begin, then **'Stop'** to process.
-    6. Keep recordings short (5-30s) for best transcription results.
+    5. **Keep recordings short** (5-10s) and speak clearly, close to the mic.
+    6. **Download the WAV file** if transcription fails to check audio quality.
     """)
 
 # Initialize session state for audio
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
+if 'wav_file_path' not in st.session_state:
+    st.session_state.wav_file_path = None
 
 # Function to get response from OpenRouter
 def get_response(prompt):
@@ -84,6 +88,28 @@ def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
         st.error(f"❌ Error saving WAV file: {e}")
         return None
 
+# Function to analyze audio (for debugging)
+def analyze_audio(wav_path):
+    try:
+        with wave.open(wav_path, 'rb') as wf:
+            frames = wf.readframes(wf.getnframes())
+            sample_rate = wf.getframerate()
+            channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            duration = wf.getnframes() / sample_rate
+            audio_data = np.frombuffer(frames, dtype=np.int16)
+            max_amplitude = np.max(np.abs(audio_data)) / 32768.0  # Normalize to [-1, 1]
+        return {
+            "duration_s": duration,
+            "sample_rate_hz": sample_rate,
+            "channels": channels,
+            "sample_width_bytes": sample_width,
+            "max_amplitude": max_amplitude
+        }
+    except Exception as e:
+        st.error(f"❌ Error analyzing audio: {e}")
+        return None
+
 # Function to transcribe audio bytes
 def transcribe_audio(audio_bytes):
     if not audio_bytes:
@@ -94,13 +120,31 @@ def transcribe_audio(audio_bytes):
         if not tmp_file_path:
             return None
 
-        # Debug: Verify file exists and size
-        st.write(f"Debug: Saved WAV file at {tmp_file_path}, size: {os.path.getsize(tmp_file_path)} bytes")
+        # Debug: Analyze and display audio properties
+        audio_info = analyze_audio(tmp_file_path)
+        if audio_info:
+            st.write(f"Debug: WAV file at {tmp_file_path}, size: {os.path.getsize(tmp_file_path)} bytes")
+            st.write(f"Debug: Audio properties: Duration={audio_info['duration_s']:.2f}s, "
+                     f"Sample Rate={audio_info['sample_rate_hz']}Hz, "
+                     f"Channels={audio_info['channels']}, "
+                     f"Sample Width={audio_info['sample_width_bytes']} bytes, "
+                     f"Max Amplitude={audio_info['max_amplitude']:.2f}")
+
+        # Provide download link for WAV file
+        with open(tmp_file_path, "rb") as f:
+            st.download_button(
+                label="📥 Download WAV File",
+                data=f,
+                file_name="recorded_audio.wav",
+                mime="audio/wav",
+                key="wav_download"
+            )
 
         # Transcribe with Google STT
         recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 300
-        recognizer.dynamic_energy_threshold = True
+        recognizer.energy_threshold = 500  # Increased for noisier environments
+        recognizer.dynamic_energy_threshold = False  # Disable dynamic adjustment
+        recognizer.pause_threshold = 0.8  # Shorter pause to detect speech end
 
         with sr.AudioFile(tmp_file_path) as source:
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
@@ -109,14 +153,17 @@ def transcribe_audio(audio_bytes):
 
         # Cleanup
         os.unlink(tmp_file_path)
+        st.session_state.wav_file_path = None
         return user_input
     except sr.UnknownValueError:
-        st.error("❌ Could not understand the audio. Please try speaking clearly.")
+        st.error("❌ Could not understand the audio. Please try speaking clearly, closer to the mic, or in a quieter environment.")
         os.unlink(tmp_file_path) if os.path.exists(tmp_file_path) else None
+        st.session_state.wav_file_path = None
         return None
     except Exception as e:
         st.error(f"❌ Transcription Error: {e}")
         os.unlink(tmp_file_path) if os.path.exists(tmp_file_path) else None
+        st.session_state.wav_file_path = None
         return None
 
 # Main interface tabs
@@ -139,6 +186,7 @@ with tab1:
         # Clear button
         if st.button("🔄 Clear Recording", use_container_width=True):
             st.session_state.audio_bytes = None
+            st.session_state.wav_file_path = None
             st.rerun()
     
     # Process recorded audio
@@ -186,7 +234,7 @@ with tab1:
                                     with col_b:
                                         with open(tts_file, "rb") as f:
                                             st.download_button(
-                                                label="📥 Download",
+                                                label="📥 Download Response",
                                                 data=f,
                                                 file_name="response.mp3",
                                                 mime="audio/mp3",
@@ -221,7 +269,7 @@ with tab2:
                     with col_b:
                         with open(tts_file, "rb") as f:
                             st.download_button(
-                                label="📥 Download",
+                                label="📥 Download Response",
                                 data=f,
                                 file_name="response.mp3",
                                 mime="audio/mp3",
@@ -238,13 +286,17 @@ with st.expander("🔧 Troubleshooting"):
     ### If recording doesn't work:
     - **Browser Permissions**: Ensure mic access is granted (check site settings).
     - **HTTPS Required**: Use HTTPS (Streamlit Cloud enforces this).
-    - **No Audio Detected**: Speak clearly; test mic in another app/site.
+    - **No Audio Detected**: 
+        - Speak clearly and close to the mic.
+        - Test mic in another app/site (e.g., voice recorder).
+        - Use headphones to reduce noise.
     - **Transcription Fails**: 
-        - Keep recordings short (5-30s).
+        - Keep recordings short (5-10s).
         - Ensure internet for Google STT.
-        - Check if audio is valid WAV (debug output shows file size).
+        - Download the WAV file to check if it contains clear speech.
+        - Check debug output for audio properties (low amplitude may indicate quiet speech).
     - **Component Issues**: Ensure `streamlit-mic-recorder==0.0.8` is in requirements.txt.
-    - **Invalid WAV Format**: If transcription fails, try shorter recordings or switch to `audio-recorder-streamlit`.
+    - **Alternative**: Try `audio-recorder-streamlit` if transcription issues persist.
     - **Streamlit Cloud**: Verify package versions match locally and on Cloud.
     """)
 
