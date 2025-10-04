@@ -7,13 +7,9 @@ import os
 import base64
 from dotenv import load_dotenv
 
-# -----------------------------
-# Load API key from .env file
-# -----------------------------
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_AUDIO_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 
@@ -22,31 +18,26 @@ st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 st.title("🎙️ Live Voice Bot")
 st.write("Record audio directly from your browser!")
 
-# Microphone setup guide
-with st.expander("📱 How to Use (Important!)"):
+# Test microphone access first
+st.info("⚠️ **Important:** This app requires HTTPS and microphone permissions. Make sure you're accessing via https:// URL (Streamlit Cloud/Render provide this automatically).")
+
+with st.expander("📱 How to Use"):
     st.markdown("""
-    ### Steps:
-    1. Click **"Start Recording"** button below
-    2. **Allow** microphone access when browser prompts you
-    3. Speak your message clearly
-    4. Click **"Stop Recording"** when done
-    5. Wait for transcription and response
-    
-    ### Tips:
-    - Use Chrome, Firefox, or Edge (Safari may have issues)
-    - Ensure HTTPS connection (required for microphone access)
-    - Speak clearly and avoid background noise
-    - Keep recordings under 30 seconds for best results
+    1. Click **Start Recording**
+    2. **ALLOW** microphone access in the browser popup
+    3. Speak clearly
+    4. Click **Stop Recording**
+    5. Wait for transcription
     """)
 
-# Initialize session state
-if 'processed_audio' not in st.session_state:
-    st.session_state.processed_audio = None
+if 'audio_data' not in st.session_state:
+    st.session_state.audio_data = None
+if 'last_timestamp' not in st.session_state:
+    st.session_state.last_timestamp = 0
 
-# Function to get response from OpenRouter
 def get_response(prompt):
     if not API_KEY:
-        st.error("API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
+        st.error("API key not found. Add OPENROUTER_API_KEY to Streamlit secrets.")
         return None
     
     headers = {
@@ -62,11 +53,10 @@ def get_response(prompt):
         response.raise_for_status()
         result = response.json()
         return result["choices"][0]["message"]["content"]
-    except requests.RequestException as e:
+    except Exception as e:
         st.error(f"API Error: {e}")
         return None
 
-# Function to convert text to speech
 def text_to_speech(text):
     try:
         tts = gTTS(text)
@@ -77,22 +67,18 @@ def text_to_speech(text):
         st.error(f"TTS Error: {e}")
         return None
 
-# Function to transcribe audio using OpenRouter Whisper
 def transcribe_audio_openrouter(audio_base64):
     if not API_KEY:
-        st.error("API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
+        st.error("API key not found.")
         return None
     
     try:
-        # Decode base64 to bytes
         audio_bytes = base64.b64decode(audio_base64)
         
-        # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_file_path = tmp_file.name
         
-        # Call OpenRouter Whisper API
         with open(tmp_file_path, 'rb') as audio_file:
             files = {'file': ('audio.webm', audio_file, 'audio/webm')}
             headers = {'Authorization': f'Bearer {API_KEY}'}
@@ -107,186 +93,234 @@ def transcribe_audio_openrouter(audio_base64):
             response.raise_for_status()
             result = response.json()
         
-        # Clean up
         os.unlink(tmp_file_path)
         return result.get('text', '')
         
-    except requests.RequestException as e:
-        st.error(f"Whisper API error: {e}")
-        return None
     except Exception as e:
         st.error(f"Transcription error: {e}")
         return None
 
-# Main interface tabs
 tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 
 with tab1:
     st.subheader("Browser-Based Audio Recording")
     
-    # Audio recorder HTML component
+    # Enhanced audio recorder with better debugging
     audio_html = """
-    <script>
-    let mediaRecorder;
-    let audioChunks = [];
-    let isRecording = false;
-    
-    const recordButton = document.getElementById('recordButton');
-    const stopButton = document.getElementById('stopButton');
-    const status = document.getElementById('status');
-    
-    recordButton.addEventListener('click', async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
-            audioChunks = [];
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+    </head>
+    <body>
+        <div class="recorder-container">
+            <button id="recordButton" class="btn record-btn">🎙️ Start Recording</button>
+            <button id="stopButton" class="btn stop-btn" disabled>⏹️ Stop Recording</button>
+            <div id="status">Ready to record</div>
+            <div id="debug" style="margin-top:10px;font-size:12px;color:#ccc;"></div>
+        </div>
+
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+            }
+            .recorder-container {
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border-radius: 15px;
+                text-align: center;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            }
+            .btn {
+                padding: 15px 30px;
+                margin: 10px;
+                font-size: 16px;
+                font-weight: bold;
+                border: none;
+                border-radius: 25px;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            }
+            .btn:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+            }
+            .btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            .record-btn {
+                background: #ff4444;
+                color: white;
+            }
+            .record-btn:hover:not(:disabled) {
+                background: #ff6666;
+            }
+            .stop-btn {
+                background: #4CAF50;
+                color: white;
+            }
+            .stop-btn:hover:not(:disabled) {
+                background: #66bb6a;
+            }
+            #status {
+                margin-top: 15px;
+                font-size: 18px;
+                font-weight: bold;
+                color: white;
+                min-height: 30px;
+            }
+        </style>
+
+        <script>
+            let mediaRecorder;
+            let audioChunks = [];
+            let isRecording = false;
             
-            mediaRecorder.ondataavailable = (event) => {
-                audioChunks.push(event.data);
-            };
+            const recordButton = document.getElementById('recordButton');
+            const stopButton = document.getElementById('stopButton');
+            const status = document.getElementById('status');
+            const debug = document.getElementById('debug');
             
-            mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = () => {
-                    const base64Audio = reader.result.split(',')[1];
-                    window.parent.postMessage({
-                        type: 'streamlit:setComponentValue',
-                        value: base64Audio
-                    }, '*');
-                };
-                stream.getTracks().forEach(track => track.stop());
-            };
+            // Check if getUserMedia is available
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                status.textContent = '❌ Browser does not support audio recording';
+                status.style.color = '#ff4444';
+                debug.textContent = 'getUserMedia not available';
+            } else {
+                debug.textContent = 'getUserMedia available';
+            }
             
-            mediaRecorder.start();
-            isRecording = true;
-            recordButton.disabled = true;
-            stopButton.disabled = false;
-            status.textContent = '🔴 Recording...';
-            status.style.color = '#ff4444';
-        } catch (err) {
-            status.textContent = '❌ Microphone access denied';
-            status.style.color = '#ff4444';
-            console.error('Error:', err);
-        }
-    });
-    
-    stopButton.addEventListener('click', () => {
-        if (mediaRecorder && isRecording) {
-            mediaRecorder.stop();
-            isRecording = false;
-            recordButton.disabled = false;
-            stopButton.disabled = true;
-            status.textContent = '✅ Recording complete!';
-            status.style.color = '#00cc00';
-        }
-    });
-    </script>
-    
-    <style>
-        .recorder-container {
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 15px;
-            text-align: center;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-        }
-        .btn {
-            padding: 15px 30px;
-            margin: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        .btn:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
-        }
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        #recordButton {
-            background: #ff4444;
-            color: white;
-        }
-        #recordButton:hover:not(:disabled) {
-            background: #ff6666;
-        }
-        #stopButton {
-            background: #4CAF50;
-            color: white;
-        }
-        #stopButton:hover:not(:disabled) {
-            background: #66bb6a;
-        }
-        #status {
-            margin-top: 15px;
-            font-size: 18px;
-            font-weight: bold;
-            color: white;
-            min-height: 30px;
-        }
-    </style>
-    
-    <div class="recorder-container">
-        <button id="recordButton" class="btn">🎙️ Start Recording</button>
-        <button id="stopButton" class="btn" disabled>⏹️ Stop Recording</button>
-        <div id="status">Ready to record</div>
-    </div>
+            recordButton.addEventListener('click', async () => {
+                debug.textContent = 'Requesting microphone access...';
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            sampleRate: 44100
+                        } 
+                    });
+                    
+                    debug.textContent = 'Microphone access granted';
+                    
+                    const options = { mimeType: 'audio/webm' };
+                    mediaRecorder = new MediaRecorder(stream, options);
+                    audioChunks = [];
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            audioChunks.push(event.data);
+                            debug.textContent = 'Recording data: ' + event.data.size + ' bytes';
+                        }
+                    };
+                    
+                    mediaRecorder.onstop = async () => {
+                        debug.textContent = 'Processing recording...';
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        debug.textContent = 'Blob size: ' + audioBlob.size + ' bytes';
+                        
+                        const reader = new FileReader();
+                        reader.readAsDataURL(audioBlob);
+                        reader.onloadend = () => {
+                            const base64Audio = reader.result.split(',')[1];
+                            const data = {
+                                audio: base64Audio,
+                                timestamp: Date.now(),
+                                size: audioBlob.size
+                            };
+                            window.parent.postMessage({
+                                type: 'streamlit:setComponentValue',
+                                value: JSON.stringify(data)
+                            }, '*');
+                            debug.textContent = 'Sent to Streamlit: ' + audioBlob.size + ' bytes';
+                        };
+                        
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordButton.disabled = true;
+                    stopButton.disabled = false;
+                    status.textContent = '🔴 Recording...';
+                    status.style.color = '#ff4444';
+                } catch (err) {
+                    status.textContent = '❌ Microphone access denied';
+                    status.style.color = '#ff4444';
+                    debug.textContent = 'Error: ' + err.message;
+                    console.error('Error:', err);
+                }
+            });
+            
+            stopButton.addEventListener('click', () => {
+                if (mediaRecorder && isRecording) {
+                    mediaRecorder.stop();
+                    isRecording = false;
+                    recordButton.disabled = false;
+                    stopButton.disabled = true;
+                    status.textContent = '✅ Recording complete!';
+                    status.style.color = '#00cc00';
+                }
+            });
+        </script>
+    </body>
+    </html>
     """
     
-    audio_data = components.html(audio_html, height=200)
+    audio_response = components.html(audio_html, height=250)
     
-    # Process audio when received
-    if audio_data and isinstance(audio_data, str) and audio_data != st.session_state.processed_audio:
-        st.session_state.processed_audio = audio_data
-        
+    if audio_response:
         try:
-            audio_bytes = base64.b64decode(audio_data)
-            st.audio(audio_bytes, format="audio/webm")
+            import json
+            data = json.loads(audio_response)
+            audio_base64 = data.get('audio')
+            timestamp = data.get('timestamp', 0)
             
-            # Transcribe and get response
-            with st.spinner("🔄 Transcribing your speech..."):
-                user_input = transcribe_audio_openrouter(audio_data)
+            if audio_base64 and timestamp != st.session_state.last_timestamp:
+                st.session_state.last_timestamp = timestamp
+                st.session_state.audio_data = audio_base64
                 
-                if user_input:
-                    st.markdown("### 🎤 You said:")
-                    st.info(f'**"{user_input}"**')
+                audio_bytes = base64.b64decode(audio_base64)
+                st.success(f"Recording received: {len(audio_bytes)} bytes")
+                st.audio(audio_bytes, format="audio/webm")
+                
+                with st.spinner("🔄 Transcribing..."):
+                    user_input = transcribe_audio_openrouter(audio_base64)
                     
-                    with st.spinner("🤔 Getting AI response..."):
-                        answer = get_response(user_input)
-                    
-                    if answer:
-                        st.markdown("---")
-                        st.markdown("### 🤖 Bot Response:")
-                        st.write(answer)
+                    if user_input:
+                        st.markdown("### 🎤 You said:")
+                        st.info(f'"{user_input}"')
                         
-                        # Generate audio response
-                        with st.spinner("🔊 Generating voice response..."):
-                            audio_file = text_to_speech(answer)
+                        with st.spinner("🤔 Getting response..."):
+                            answer = get_response(user_input)
                         
-                        if audio_file:
-                            col_a, col_b = st.columns([3, 1])
-                            with col_a:
-                                st.audio(audio_file, format="audio/mp3")
-                            with col_b:
-                                with open(audio_file, "rb") as file:
-                                    st.download_button(
-                                        label="📥 Download",
-                                        data=file,
-                                        file_name="response.mp3",
-                                        mime="audio/mp3",
-                                        use_container_width=True
-                                    )
-                            os.unlink(audio_file)
+                        if answer:
+                            st.markdown("---")
+                            st.markdown("### 🤖 Bot Response:")
+                            st.write(answer)
+                            
+                            with st.spinner("🔊 Generating audio..."):
+                                audio_file = text_to_speech(answer)
+                            
+                            if audio_file:
+                                col_a, col_b = st.columns([3, 1])
+                                with col_a:
+                                    st.audio(audio_file, format="audio/mp3")
+                                with col_b:
+                                    with open(audio_file, "rb") as f:
+                                        st.download_button(
+                                            label="📥 Download",
+                                            data=f,
+                                            file_name="response.mp3",
+                                            mime="audio/mp3",
+                                            use_container_width=True
+                                        )
+                                os.unlink(audio_file)
         except Exception as e:
-            st.error(f"Error processing audio: {e}")
+            st.error(f"Error: {e}")
 
 with tab2:
     st.subheader("Text Input")
@@ -301,7 +335,6 @@ with tab2:
                 st.markdown("### 🤖 Bot Response:")
                 st.write(answer)
                 
-                # Generate audio
                 with st.spinner("🔊 Generating voice..."):
                     audio_file = text_to_speech(answer)
                 
@@ -310,10 +343,10 @@ with tab2:
                     with col_a:
                         st.audio(audio_file, format="audio/mp3")
                     with col_b:
-                        with open(audio_file, "rb") as file:
+                        with open(audio_file, "rb") as f:
                             st.download_button(
                                 label="📥 Download",
-                                data=file,
+                                data=f,
                                 file_name="response.mp3",
                                 mime="audio/mp3",
                                 use_container_width=True
@@ -322,33 +355,23 @@ with tab2:
         else:
             st.warning("Please enter some text first.")
 
-# Troubleshooting section
 with st.expander("🔧 Troubleshooting"):
     st.markdown("""
-    ### Common Issues:
+    **Check the debug messages below the recording buttons.**
     
-    **Microphone not working?**
-    - Make sure you clicked "Allow" when browser asked for mic permission
-    - Check browser settings: Site Settings → Microphone → Allow
-    - HTTPS is required for microphone access (works on Streamlit Cloud/Render)
-    - Try a different browser (Chrome recommended)
+    **If you see "getUserMedia not available":**
+    - You MUST use HTTPS (http:// won't work)
+    - Streamlit Cloud automatically provides HTTPS
     
-    **Recording but no transcription?**
-    - Speak louder and more clearly
-    - Reduce background noise
-    - Keep recordings under 30 seconds
-    - Try recording again
+    **If you see "Microphone access denied":**
+    - Click the lock icon in your browser's address bar
+    - Reset permissions for this site
+    - Reload the page and allow microphone access
     
-    **API errors?**
-    - Ensure `OPENROUTER_API_KEY` is set in environment variables
-    - Check your API key is valid and has credits
-    - OpenRouter uses the same API key for both chat and audio transcription
-    
-    **Deployment issues?**
-    - This code works on Streamlit Cloud and Render (HTTPS enabled)
-    - No PyAudio needed - uses OpenRouter Whisper API
-    - Uses native browser MediaRecorder API
+    **If nothing happens:**
+    - Try Chrome or Firefox (Safari has issues)
+    - Check browser console (F12) for errors
     """)
 
 st.markdown("---")
-st.caption("Powered by HTML5 MediaRecorder + OpenRouter Whisper - No PyAudio needed!")
+st.caption("Powered by OpenRouter")
