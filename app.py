@@ -107,7 +107,7 @@ def transcribe_audio_heuristic(audio_bytes):
         audio, sr = librosa.load(tmp_file_path, sr=16000)
         os.unlink(tmp_file_path)
         
-        chunk_length = sr * 0.5  # 0.5 seconds for better word detection
+        chunk_length = int(sr * 0.5)  # Convert to integer for 0.5 seconds
         chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
         
         # Define vocabulary with error handling
@@ -115,7 +115,7 @@ def transcribe_audio_heuristic(audio_bytes):
             "hello": "samples/hello.wav",
             "world": "samples/world.wav",
             "help": "samples/help.wav",
-            # Add more words as needed, e.g., "start": "samples/start.wav"
+            # Add more words, e.g., "start": "samples/start.wav"
         }
         vocabulary = {}
         for word, file_path in vocabulary_files.items():
