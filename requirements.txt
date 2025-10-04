@@ -5,3 +5,5 @@ gtts
 speechrecognition
 numpy
 sounddevice
+streamlit-audiorec
+
