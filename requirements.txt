@@ -8,4 +8,5 @@ sounddevice
 streamlit-audiorec
 python-dotenv
 soundfile
+audiorecorder
 
