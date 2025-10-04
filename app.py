@@ -12,18 +12,119 @@ from dotenv import load_dotenv
 # -----------------------------
 load_dotenv()
 API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # OpenRouter API endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_AUDIO_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Live Voice Bot")
-st.write("Record audio directly from your browser! 🎧")
+st.write("Record audio directly from your browser!")
 
-# Custom audio recorder using HTML5 MediaRecorder API
-def audio_recorder_component():
+# Microphone setup guide
+with st.expander("📱 How to Use (Important!)"):
+    st.markdown("""
+    ### Steps:
+    1. Click **"Start Recording"** button below
+    2. **Allow** microphone access when browser prompts you
+    3. Speak your message clearly
+    4. Click **"Stop Recording"** when done
+    5. Wait for transcription and response
+    
+    ### Tips:
+    - Use Chrome, Firefox, or Edge (Safari may have issues)
+    - Ensure HTTPS connection (required for microphone access)
+    - Speak clearly and avoid background noise
+    - Keep recordings under 30 seconds for best results
+    """)
+
+# Initialize session state
+if 'processed_audio' not in st.session_state:
+    st.session_state.processed_audio = None
+
+# Function to get response from OpenRouter
+def get_response(prompt):
+    if not API_KEY:
+        st.error("API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    except requests.RequestException as e:
+        st.error(f"API Error: {e}")
+        return None
+
+# Function to convert text to speech
+def text_to_speech(text):
+    try:
+        tts = gTTS(text)
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(temp_file.name)
+        return temp_file.name
+    except Exception as e:
+        st.error(f"TTS Error: {e}")
+        return None
+
+# Function to transcribe audio using OpenRouter Whisper
+def transcribe_audio_openrouter(audio_base64):
+    if not API_KEY:
+        st.error("API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
+        return None
+    
+    try:
+        # Decode base64 to bytes
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_file_path = tmp_file.name
+        
+        # Call OpenRouter Whisper API
+        with open(tmp_file_path, 'rb') as audio_file:
+            files = {'file': ('audio.webm', audio_file, 'audio/webm')}
+            headers = {'Authorization': f'Bearer {API_KEY}'}
+            data = {'model': 'openai/whisper-1'}
+            
+            response = requests.post(
+                OPENROUTER_AUDIO_URL,
+                headers=headers,
+                files=files,
+                data=data
+            )
+            response.raise_for_status()
+            result = response.json()
+        
+        # Clean up
+        os.unlink(tmp_file_path)
+        return result.get('text', '')
+        
+    except requests.RequestException as e:
+        st.error(f"Whisper API error: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Transcription error: {e}")
+        return None
+
+# Main interface tabs
+tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
+
+with tab1:
+    st.subheader("Browser-Based Audio Recording")
+    
+    # Audio recorder HTML component
     audio_html = """
     <script>
     let mediaRecorder;
@@ -50,7 +151,6 @@ def audio_recorder_component():
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const base64Audio = reader.result.split(',')[1];
-                    // Send data back to Streamlit
                     window.parent.postMessage({
                         type: 'streamlit:setComponentValue',
                         value: base64Audio
@@ -141,131 +241,23 @@ def audio_recorder_component():
     </div>
     """
     
-    # Return the component without a key - let Streamlit handle it
     audio_data = components.html(audio_html, height=200)
-    return audio_data
-
-# Microphone setup guide
-with st.expander("📱 How to Use (Important!)"):
-    st.markdown("""
-    ### Steps:
-    1. Click **"Start Recording"** button below
-    2. **Allow** microphone access when browser prompts you
-    3. Speak your message clearly
-    4. Click **"Stop Recording"** when done
-    5. Wait for transcription and response
     
-    ### Tips:
-    - Use Chrome, Firefox, or Edge (Safari may have issues)
-    - Ensure HTTPS connection (required for microphone access)
-    - Speak clearly and avoid background noise
-    - Keep recordings under 30 seconds for best results
-    """)
-
-# Initialize session state
-if 'processed_audio' not in st.session_state:
-    st.session_state.processed_audio = None
-
-# Function to get response from OpenRouter
-def get_response(prompt):
-    if not API_KEY:
-        st.error("❌ API key not found. Please set OPENROUTER_API_KEY in your environment variables.")
-        return None
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "openai/gpt-4o-mini",
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
-    except requests.RequestException as e:
-        st.error(f"❌ API Error: {e}")
-        return None
-
-# Function to convert text to speech
-def text_to_speech(text):
-    try:
-        tts = gTTS(text)
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        tts.save(temp_file.name)
-        return temp_file.name
-    except Exception as e:
-        st.error(f"❌ TTS Error: {e}")
-        return None
-
-# Function to transcribe audio using OpenAI Whisper API
-def transcribe_audio_whisper(audio_base64):
-    if not OPENAI_API_KEY:
-        st.error("❌ OpenAI API key not found. Please set OPENAI_API_KEY in your environment variables.")
-        return None
-    
-    try:
-        # Decode base64 to bytes
-        audio_bytes = base64.b64decode(audio_base64)
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_file_path = tmp_file.name
-        
-        # Call Whisper API
-        with open(tmp_file_path, 'rb') as audio_file:
-            files = {'file': ('audio.webm', audio_file, 'audio/webm')}
-            headers = {'Authorization': f'Bearer {OPENAI_API_KEY}'}
-            data = {'model': 'whisper-1'}
-            
-            response = requests.post(
-                'https://api.openai.com/v1/audio/transcriptions',
-                headers=headers,
-                files=files,
-                data=data
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        # Clean up
-        os.unlink(tmp_file_path)
-        return result['text']
-        
-    except requests.RequestException as e:
-        st.error(f"❌ Whisper API error: {e}")
-        return None
-    except Exception as e:
-        st.error(f"❌ Transcription error: {e}")
-        return None
-
-# Main interface tabs
-tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
-
-with tab1:
-    st.subheader("Browser-Based Audio Recording")
-    
-    # Audio recorder component
-    audio_data = audio_recorder_component()
-    
-    # Process audio when received - Check if audio_data is a string (base64)
+    # Process audio when received
     if audio_data and isinstance(audio_data, str) and audio_data != st.session_state.processed_audio:
         st.session_state.processed_audio = audio_data
         
-        # Decode and play audio
         try:
             audio_bytes = base64.b64decode(audio_data)
             st.audio(audio_bytes, format="audio/webm")
             
             # Transcribe and get response
             with st.spinner("🔄 Transcribing your speech..."):
-                user_input = transcribe_audio_whisper(audio_data)
+                user_input = transcribe_audio_openrouter(audio_data)
                 
                 if user_input:
                     st.markdown("### 🎤 You said:")
-                    st.info(f"**\"{user_input}\"**")
+                    st.info(f'**"{user_input}"**')
                     
                     with st.spinner("🤔 Getting AI response..."):
                         answer = get_response(user_input)
@@ -294,7 +286,7 @@ with tab1:
                                     )
                             os.unlink(audio_file)
         except Exception as e:
-            st.error(f"❌ Error processing audio: {e}")
+            st.error(f"Error processing audio: {e}")
 
 with tab2:
     st.subheader("Text Input")
@@ -328,7 +320,7 @@ with tab2:
                             )
                     os.unlink(audio_file)
         else:
-            st.warning("⚠️ Please enter some text first.")
+            st.warning("Please enter some text first.")
 
 # Troubleshooting section
 with st.expander("🔧 Troubleshooting"):
@@ -349,14 +341,14 @@ with st.expander("🔧 Troubleshooting"):
     
     **API errors?**
     - Ensure `OPENROUTER_API_KEY` is set in environment variables
-    - Ensure `OPENAI_API_KEY` is set for Whisper transcription
-    - Check your API keys are valid and have credits
+    - Check your API key is valid and has credits
+    - OpenRouter uses the same API key for both chat and audio transcription
     
     **Deployment issues?**
     - This code works on Streamlit Cloud and Render (HTTPS enabled)
-    - No PyAudio needed - uses OpenAI Whisper API
+    - No PyAudio needed - uses OpenRouter Whisper API
     - Uses native browser MediaRecorder API
     """)
 
 st.markdown("---")
-st.caption("💡 Powered by HTML5 MediaRecorder + OpenAI Whisper - No PyAudio needed!")
+st.caption("Powered by HTML5 MediaRecorder + OpenRouter Whisper - No PyAudio needed!")
