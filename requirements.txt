@@ -7,5 +7,6 @@ librosa
 scipy
 dtw-python
 soundfile
+scipy
 
 
