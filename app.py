@@ -151,7 +151,11 @@ def transcribe_audio(audio_bytes):
 
         # --- STEP 1: Manual Upload (Decoupling from SDK) ---
         upload_url = "https://api.assemblyai.com/v2/upload"
-        headers = {"authorization": aai.settings.api_key}
+        headers = {
+            "authorization": aai.settings.api_key,
+            # CRITICAL FIX: Added Content-Type to fix 422 Unprocessable Entity error
+            "content-type": "audio/mpeg" 
+        }
         
         st.info("⬆️ Uploading processed audio stream directly (manual requests method)...")
         upload_response = requests.post(
@@ -336,7 +340,7 @@ with st.expander("🔧 Troubleshooting & Audio Quality"):
     st.markdown("""
     ### Solving the Persistent Upload Error
     The latest fix uses a **two-step, decoupled process** to upload and transcribe:
-    1.  **Manual Upload:** The processed MP3 audio stream is sent directly to AssemblyAI's `v2/upload` API endpoint using the stable Python `requests` library. This bypasses potential instability in the SDK's internal stream handling.
+    1.  **Manual Upload:** The processed MP3 audio stream is sent directly to AssemblyAI's `v2/upload` API endpoint using the stable Python `requests` library. **(Now includes explicit Content-Type header to fix 422 errors.)**
     2.  **URL Transcription:** The resulting public URL from the upload is then passed to the AssemblyAI SDK for transcription.
     
     This technique is the most robust way to handle file uploads in complex cloud environments like Streamlit Cloud.
