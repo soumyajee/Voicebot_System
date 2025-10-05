@@ -9,6 +9,7 @@ aiortc
 av
 pydub
 ffmpeg-python
+faster_whisper
 
 
 
