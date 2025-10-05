@@ -47,7 +47,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
 st.title("🎙️ Robust Voice Bot")
-st.write("Now with highly optimized audio pre-processing to solve the 'Empty Transcription' error. 🎧")
+st.write("Now using MP3 encoding for maximum transcription compatibility. 🎧")
 
 # --- Initial Warnings/Setup Checks ---
 if not HAS_MIC_RECORDER:
@@ -94,18 +94,20 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# --- CRITICAL FIX: ROBUST WAV CONVERSION AND NORMALIZATION ---
-def save_as_wav(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
+# --- CRITICAL FIX: ROBUST MP3 CONVERSION AND NORMALIZATION ---
+def save_for_transcription(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
     """
-    Converts raw audio bytes to a robust, normalized WAV file.
-    It first writes a proper WAV header to the raw bytes stream,
-    then uses pydub to normalize the resulting stream.
+    Converts raw audio bytes to a robust, normalized, resampled MP3 file.
+    It ensures a proper WAV header, then uses pydub to resample, normalize, 
+    and save the resulting stream as MP3 for maximum transcription compatibility.
+    
+    Default mic-recorder output: 48000 Hz, 1 channel, 16-bit (sample_width=2).
     """
     if not audio_bytes or len(audio_bytes) < 4096: # Minimum 4KB expected for a short recording
         st.error("❌ Audio data too small or empty. Record for at least 2 seconds.")
         return None
         
-    filename = f"recording_{int(time.time())}.wav"
+    filename = f"recording_{int(time.time())}.mp3"
     file_path = os.path.join(AUDIO_DIR, filename)
 
     try:
@@ -120,26 +122,29 @@ def save_as_wav(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
         buffer.seek(0)
         
         # 2. Use pydub to load the complete WAV file from the in-memory buffer
-        st.info("⚙️ Loading audio stream and normalizing volume...")
+        st.info("⚙️ Loading, resampling (48kHz -> 16kHz), and normalizing audio volume...")
         audio_segment = AudioSegment.from_file(buffer, format="wav")
         
-        # 3. Normalize the volume to combat quiet recordings
-        normalized_audio = normalize(audio_segment)
+        # 3. Resample to 16kHz (Standard for high-accuracy speech transcription)
+        resampled_audio = audio_segment.set_frame_rate(16000)
+        
+        # 4. Normalize the volume to combat quiet recordings
+        normalized_audio = normalize(resampled_audio)
 
-        # 4. Export the normalized audio to a physical WAV file
-        normalized_audio.export(file_path, format="wav")
+        # 5. Export the processed audio to a physical MP3 file (The new compatibility fix)
+        normalized_audio.export(file_path, format="mp3")
         
         file_size = os.path.getsize(file_path)
-        st.write(f"Debug: Saved WAV file size: {file_size} bytes")
+        st.write(f"Debug: Saved MP3 file size: {file_size} bytes (resampled to 16kHz)")
         
-        if file_size < 4096:
+        if file_size < 1024: # MP3 files are much smaller, checking for 1KB minimum
             st.error("❌ Processed audio file still too small. Try recording louder or longer.")
             os.unlink(file_path)
             return None
             
         return file_path
     except Exception as e:
-        st.error(f"❌ Critical Error saving/processing WAV file: {e}. Check if PyDub/FFmpeg dependencies are met.")
+        st.error(f"❌ Critical Error saving/processing MP3 file: {e}. Check if PyDub/FFmpeg dependencies are met.")
         if os.path.exists(file_path):
             os.unlink(file_path)
         return None
@@ -152,7 +157,7 @@ def transcribe_audio(audio_bytes):
     
     file_path = None
     try:
-        file_path = save_as_wav(audio_bytes)
+        file_path = save_for_transcription(audio_bytes)
         if not file_path:
             return None
 
@@ -326,13 +331,14 @@ with tab2:
 # ------------------------------
 with st.expander("🔧 Troubleshooting & Audio Quality"):
     st.markdown("""
-    ### WAV Conversion Fix
-    The previous errors were likely caused by the raw audio bytes lacking a complete WAV file header, confusing the AssemblyAI model.
-    
-    The new code uses the Python **`wave` module** to explicitly create a valid WAV header around the raw PCM audio, ensuring a perfectly formed file is passed to `pydub` for normalization, and then to AssemblyAI for transcription. This fix should resolve most empty transcription issues.
+    ### MP3 Conversion and Resampling (New)
+    The code now performs three crucial steps before transcription:
+    1. **Robust WAV Header:** Ensures a valid audio stream is created from the raw mic input.
+    2. **16kHz Resampling & Normalization:** The audio is normalized for volume and resampled to the optimal **16kHz**.
+    3. **MP3 Export:** The processed audio is saved as an **MP3** file. This highly compatible, compressed format should minimize conflicts with the transcription service's ingestion process, finally eliminating the "Empty Transcription" error.
     
     ### Installation Check
-    For this app to run correctly in deployment environments (like Streamlit Cloud), you must ensure `pydub`'s underlying dependency, **FFmpeg**, is installed on the system path. For local development or Render, this may involve extra steps.
+    For this app to run correctly in deployment environments (like Streamlit Cloud), you must ensure `pydub`'s underlying dependency, **FFmpeg**, is installed on the system path.
     
     Dependencies:
     * `pip install streamlit`
@@ -344,4 +350,4 @@ with st.expander("🔧 Troubleshooting & Audio Quality"):
     """)
 
 st.markdown("---")
-st.caption("Optimized with Audio Normalization (via pydub) and Robust WAV Header Generation | Powered by AssemblyAI & OpenRouter")
+st.caption("Optimized with Audio Normalization (via pydub), Robust WAV Header Generation, and 16kHz Resampling | Powered by AssemblyAI & OpenRouter")
