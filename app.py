@@ -18,6 +18,9 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Log Streamlit version for debugging
+logger.debug(f"Streamlit version: {st.__version__}")
+
 # ------------------------------
 # Load API keys
 # ------------------------------
@@ -321,9 +324,9 @@ with tab1:
     except Exception as e:
         st.error(f"❌ WebRTC initialization failed: {e}")
         st.write("### Troubleshooting:")
-        st.write("- Ensure `streamlit-webrtc` version is 0.47.0+ (`pip install streamlit-webrtc==0.47.0`).")
+        st.write("- Ensure Streamlit version is 1.38.0+ (check logs for version).")
         st.write("- Render may block UDP ports; try batch mode or contact Render support.")
-        st.write("- Check Streamlit version (use 1.38.0 or higher with `st.rerun()`).")
+        st.write("- Clear Render build cache and redeploy.")
         ctx = None
 
     # Check stream state with timeout for permission prompt
@@ -472,11 +475,10 @@ with st.expander("🔧 Troubleshooting"):
         - Empty transcription: Check for no speech, low volume, wrong format, short duration, or noise.
         - Ensure `ASSEMBLYAI_API_KEY` is valid and not rate-limited.
     - **WebRTC Issues**:
-        - Error 'webrtc_streamer() got an unexpected keyword argument 'on_error'': Update `streamlit-webrtc` to 0.47.0+.
+        - Error 'module 'streamlit' has no attribute 'experimental_rerun'': Ensure Streamlit 1.38.0+ is installed (check logs).
         - Render may block UDP ports; try batch mode or contact Render support.
-        - Update `streamlit-webrtc` (`pip install streamlit-webrtc==0.47.0`).
+        - Clear Render build cache and redeploy.
         - Verify compatible browser (e.g., Chrome) and HTTPS.
-        - Check Render logs for detailed errors.
     - **Component Issues**: Update all dependencies to latest versions.
     - **Local Storage**: Ensure `./audio_files/` is writable.
     - **Render Deployment**: Use Python 3.11 or 3.12 (avoid 3.13).
