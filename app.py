@@ -38,16 +38,17 @@ else:
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Directory for gTTS output (since gTTS requires a file)
 AUDIO_DIR = "./audio_files"
-os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True) 
 
 # ------------------------------
 # Streamlit Page Configuration
 # ------------------------------
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
-st.title("🎙️ Robust Voice Bot")
-st.write("Now using MP3 encoding for maximum transcription compatibility. 🎧")
+st.title("🎙️ Final Robust Voice Bot")
+st.write("Using two-step, decoupled upload and transcription for maximum reliability. 🎧")
 
 # --- Initial Warnings/Setup Checks ---
 if not HAS_MIC_RECORDER:
@@ -56,7 +57,7 @@ if not HAS_MIC_RECORDER:
 if not HAS_PYDUB:
     st.warning("⚠️ **Critical Library Missing:** `pydub` is required for robust audio processing. Please install it.")
     st.code("pip install pydub", language="bash")
-    st.stop() # Stop execution if critical dependency is missing
+    st.stop() 
 
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
@@ -94,74 +95,78 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# --- CRITICAL FIX: ROBUST MP3 CONVERSION AND NORMALIZATION ---
-def save_for_transcription(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
+def process_audio_to_memory(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
     """
-    Converts raw audio bytes to a robust, normalized, resampled MP3 file.
-    It ensures a proper WAV header, then uses pydub to resample, normalize, 
-    and save the resulting stream as MP3 for maximum transcription compatibility.
-    
-    Default mic-recorder output: 48000 Hz, 1 channel, 16-bit (sample_width=2).
+    Converts raw audio bytes to a robust, normalized, resampled MP3 stream (in memory).
+    Returns an io.BytesIO object containing the MP3 data.
     """
-    if not audio_bytes or len(audio_bytes) < 4096: # Minimum 4KB expected for a short recording
+    if not audio_bytes or len(audio_bytes) < 4096:
         st.error("❌ Audio data too small or empty. Record for at least 2 seconds.")
         return None
         
-    filename = f"recording_{int(time.time())}.mp3"
-    file_path = os.path.join(AUDIO_DIR, filename)
-
     try:
-        # 1. Create a proper WAV file in memory (BytesIO) from the raw PCM data
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wf:
+        # 1. Create a proper WAV file in memory from the raw PCM data
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(sample_width)
             wf.setframerate(sample_rate)
             wf.writeframes(audio_bytes)
+        wav_buffer.seek(0)
         
-        buffer.seek(0)
-        
-        # 2. Use pydub to load the complete WAV file from the in-memory buffer
-        st.info("⚙️ Loading, resampling (48kHz -> 16kHz), and normalizing audio volume...")
-        audio_segment = AudioSegment.from_file(buffer, format="wav")
-        
-        # 3. Resample to 16kHz (Standard for high-accuracy speech transcription)
+        # 2. Use pydub to load, resample, and normalize
+        st.info("⚙️ Loading, resampling (48kHz -> 16kHz), and normalizing audio volume (in memory)...")
+        audio_segment = AudioSegment.from_file(wav_buffer, format="wav")
         resampled_audio = audio_segment.set_frame_rate(16000)
-        
-        # 4. Normalize the volume to combat quiet recordings
         normalized_audio = normalize(resampled_audio)
 
-        # 5. Export the processed audio to a physical MP3 file (The new compatibility fix)
-        normalized_audio.export(file_path, format="mp3")
+        # 3. Export the processed audio to a new in-memory MP3 buffer
+        mp3_buffer = io.BytesIO()
+        normalized_audio.export(mp3_buffer, format="mp3")
+        mp3_buffer.seek(0) # Rewind buffer to start for reading by AssemblyAI
+
+        buffer_size = len(mp3_buffer.getvalue())
+        st.write(f"Debug: In-memory MP3 buffer size: {buffer_size} bytes")
         
-        file_size = os.path.getsize(file_path)
-        st.write(f"Debug: Saved MP3 file size: {file_size} bytes (resampled to 16kHz)")
-        
-        if file_size < 1024: # MP3 files are much smaller, checking for 1KB minimum
-            st.error("❌ Processed audio file still too small. Try recording louder or longer.")
-            os.unlink(file_path)
+        if buffer_size < 1024:
+            st.error("❌ Processed audio stream still too small.")
             return None
             
-        return file_path
+        return mp3_buffer
     except Exception as e:
-        st.error(f"❌ Critical Error saving/processing MP3 file: {e}. Check if PyDub/FFmpeg dependencies are met.")
-        if os.path.exists(file_path):
-            os.unlink(file_path)
+        st.error(f"❌ Critical Error processing audio stream: {e}. Ensure PyDub/FFmpeg are available.")
         return None
 
 def transcribe_audio(audio_bytes):
-    """Handles transcription with AssemblyAI, including file processing and cleanup."""
+    """Handles transcription using manual upload via requests, then transcribes the URL."""
     if not aai.settings.api_key:
-        st.error("❌ AssemblyAI API key not found. Add ASSEMBLYAI_API_KEY to .env file.")
+        st.error("❌ AssemblyAI API key not found.")
         return None
     
-    file_path = None
+    audio_stream = None
     try:
-        file_path = save_for_transcription(audio_bytes)
-        if not file_path:
+        audio_stream = process_audio_to_memory(audio_bytes)
+        if not audio_stream:
             return None
 
-        # Configure AssemblyAI for best transcription results
+        # --- STEP 1: Manual Upload (Decoupling from SDK) ---
+        upload_url = "https://api.assemblyai.com/v2/upload"
+        headers = {"authorization": aai.settings.api_key}
+        
+        st.info("⬆️ Uploading processed audio stream directly (manual requests method)...")
+        upload_response = requests.post(
+            upload_url,
+            headers=headers,
+            # Read the bytes from the stream for the request body
+            data=audio_stream.read() 
+        )
+        upload_response.raise_for_status() # Check for HTTP errors (4xx/5xx)
+        uploaded_audio_url = upload_response.json().get('upload_url')
+        
+        if not uploaded_audio_url:
+            raise Exception("Upload succeeded but returned no 'upload_url'.")
+
+        # --- STEP 2: Transcribe the URL ---
         config = aai.TranscriptionConfig(
             language_code="en",
             speech_model=aai.SpeechModel.best,
@@ -173,15 +178,15 @@ def transcribe_audio(audio_bytes):
         retries = 3
         for attempt in range(retries):
             try:
-                st.info(f"🔄 Transcribing with AssemblyAI (attempt {attempt + 1}/{retries})...")
-                transcript = transcriber.transcribe(file_path, config=config)
+                st.info(f"🔄 Transcribing URL with AssemblyAI (attempt {attempt + 1}/{retries})...")
+                # Pass the temporary URL back to the SDK for transcription
+                transcript = transcriber.transcribe(uploaded_audio_url, config=config) 
                 
                 if transcript.status == aai.TranscriptStatus.error:
                     raise Exception(f"Transcription error: {transcript.error}")
                 
                 text = transcript.text.strip() if transcript.text else None
                 
-                # Check for empty or non-speech transcriptions
                 if not text or len(text.split()) < 2:
                     st.warning(f"⚠️ Empty/Short transcription: '{text}'. Retrying if possible.")
                     if attempt < retries - 1:
@@ -195,20 +200,21 @@ def transcribe_audio(audio_bytes):
                 return text
                 
             except Exception as e:
+                # Retry for transcription submission/processing errors
                 if attempt < retries - 1:
                     st.warning(f"Retrying ({attempt + 1}/{retries})... Error: {str(e)}")
                     sleep(2)
                 else:
                     raise e
                     
+    except requests.RequestException as e:
+        # Catch specific manual upload request errors
+        st.error(f"❌ Critical Upload Failure: Could not reach AssemblyAI upload endpoint. Error: {e}")
+        return None
     except Exception as e:
         st.error(f"❌ AssemblyAI Processing Failure: {e}")
         return None
-    finally:
-        # Clean up the file
-        if file_path and os.path.exists(file_path):
-            os.unlink(file_path)
-
+    
 # ------------------------------
 # Main Interface Tabs
 # ------------------------------
@@ -241,22 +247,19 @@ with tab1:
     if audio_data and 'bytes' in audio_data:
         audio_bytes = audio_data.get('bytes')
         
-        # Only process if new audio bytes are received
         if st.session_state.audio_bytes is None or len(st.session_state.audio_bytes) != len(audio_bytes):
             st.session_state.audio_bytes = audio_bytes
             st.success("✅ Recording complete! Processing audio...")
-            st.audio(audio_bytes, format="audio/wav")
+            st.audio(audio_bytes, format="audio/wav") 
             
-            # Auto-process
-            with st.spinner("🔄 Transcribing and processing audio..."):
+            with st.spinner("🔄 Transcribing and getting AI response..."):
                 user_input = transcribe_audio(audio_bytes)
                 
                 if user_input:
                     st.markdown("### 🎤 You Said:")
                     st.info(f'"{user_input}"')
                     
-                    with st.spinner("🤔 Getting AI response..."):
-                        answer = get_response(user_input)
+                    answer = get_response(user_input)
                     
                     if answer:
                         st.markdown("---")
@@ -280,8 +283,8 @@ with tab1:
                                         key="recommended_voice_download",
                                         use_container_width=True
                                     )
-                            os.unlink(tts_file)
-            st.stop() # Stop the rerun cycle after processing
+                            os.unlink(tts_file) 
+            st.stop() 
 
 # ------------------------------
 # Text Input Tab
@@ -331,14 +334,15 @@ with tab2:
 # ------------------------------
 with st.expander("🔧 Troubleshooting & Audio Quality"):
     st.markdown("""
-    ### MP3 Conversion and Resampling (New)
-    The code now performs three crucial steps before transcription:
-    1. **Robust WAV Header:** Ensures a valid audio stream is created from the raw mic input.
-    2. **16kHz Resampling & Normalization:** The audio is normalized for volume and resampled to the optimal **16kHz**.
-    3. **MP3 Export:** The processed audio is saved as an **MP3** file. This highly compatible, compressed format should minimize conflicts with the transcription service's ingestion process, finally eliminating the "Empty Transcription" error.
+    ### Solving the Persistent Upload Error
+    The latest fix uses a **two-step, decoupled process** to upload and transcribe:
+    1.  **Manual Upload:** The processed MP3 audio stream is sent directly to AssemblyAI's `v2/upload` API endpoint using the stable Python `requests` library. This bypasses potential instability in the SDK's internal stream handling.
+    2.  **URL Transcription:** The resulting public URL from the upload is then passed to the AssemblyAI SDK for transcription.
+    
+    This technique is the most robust way to handle file uploads in complex cloud environments like Streamlit Cloud.
     
     ### Installation Check
-    For this app to run correctly in deployment environments (like Streamlit Cloud), you must ensure `pydub`'s underlying dependency, **FFmpeg**, is installed on the system path.
+    You still need **FFmpeg** installed on the host system (required by `pydub`) for audio processing.
     
     Dependencies:
     * `pip install streamlit`
@@ -350,4 +354,4 @@ with st.expander("🔧 Troubleshooting & Audio Quality"):
     """)
 
 st.markdown("---")
-st.caption("Optimized with Audio Normalization (via pydub), Robust WAV Header Generation, and 16kHz Resampling | Powered by AssemblyAI & OpenRouter")
+st.caption("Optimized with Decoupled Upload/Transcription Pipeline | Powered by AssemblyAI & OpenRouter")
