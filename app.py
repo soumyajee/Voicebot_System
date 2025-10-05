@@ -1,12 +1,13 @@
 import streamlit as st
 import requests
 from gtts import gTTS
-import tempfile
 import os
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 import wave
 from groq import Groq
+from time import sleep
+import time
 
 # ------------------------------
 # Load API keys
@@ -15,11 +16,15 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Groq client for Whisper
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Initialize Groq client
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# OpenRouter API endpoint
+# API endpoints
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Local directory for saving audio files
+AUDIO_DIR = "./audio_files"
+os.makedirs(AUDIO_DIR, exist_ok=True)  # Create directory if it doesn't exist
 
 # ------------------------------
 # Streamlit Page Configuration
@@ -29,19 +34,21 @@ st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 st.title("🎙️ Live Voice Bot")
 st.write("Record voice directly in your browser! 🎧 (Grant mic permission when prompted.)")
 
-# ------------------------------
-# Microphone Setup Guide
-# ------------------------------
+# Microphone setup guide
 with st.expander("📱 Microphone Setup (Important!)"):
     st.markdown("""
     ### Before Recording:
     1. **Allow** microphone access in your browser (popup will appear on first record).
-    2. **Test** your mic in browser settings.
+    2. **Test** your mic in browser settings (e.g., Chrome: chrome://settings/content/microphone).
     3. **Use headphones** if in a noisy environment.
     4. Recording happens in-browser—no server mic needed.
     5. **Click 'Start Recording'** to begin, then **'Stop'** to process.
     6. Keep recordings short (5-30s) for best transcription results.
     """)
+
+# Initialize session state for audio
+if 'audio_bytes' not in st.session_state:
+    st.session_state.audio_bytes = None
 
 # ------------------------------
 # Helper Functions
@@ -66,54 +73,89 @@ def get_response(prompt):
         result = response.json()
         return result["choices"][0]["message"]["content"]
     except requests.RequestException as e:
-        st.error(f"❌ API Error: {e}")
+        st.error(f"❌ OpenRouter API Error: {e}")
         return None
 
 # Convert text to speech
 def text_to_speech(text):
     try:
         tts = gTTS(text)
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        tts.save(temp_file.name)
-        return temp_file.name
+        temp_file = os.path.join(AUDIO_DIR, f"tts_{int(time.time())}.mp3")
+        tts.save(temp_file)
+        return temp_file
     except Exception as e:
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# Save audio bytes as WAV
-def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
+# Save audio bytes as WAV to local directory
+def save_as_wav(audio_bytes, sample_rate=44100, channels=1, sample_width=2):
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            with wave.open(tmp_file.name, 'wb') as wf:
-                wf.setnchannels(channels)
-                wf.setsampwidth(sample_width)
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio_bytes)
-            return tmp_file.name
+        # Generate unique filename with timestamp
+        filename = f"recording_{int(time.time())}.wav"
+        file_path = os.path.join(AUDIO_DIR, filename)
+        
+        with wave.open(file_path, 'wb') as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_bytes)
+        st.write(f"Debug: Saved WAV file at {file_path}")
+        return file_path
     except Exception as e:
         st.error(f"❌ Error saving WAV file: {e}")
         return None
 
-# Transcribe audio using Groq Whisper
+# Transcribe audio using Groq Whisper-large-v3
 def transcribe_audio(audio_bytes):
     if not audio_bytes:
+        st.error("❌ No audio data provided.")
+        return None
+    if not groq_client:
+        st.error("❌ Groq API key not found. Add GROQ_API_KEY to .env file.")
         return None
     try:
-        tmp_file_path = save_as_wav(audio_bytes)
-        if not tmp_file_path:
+        file_path = save_as_wav(audio_bytes, sample_rate=44100, channels=1, sample_width=2)
+        if not file_path:
             return None
 
-        # Send file to Groq Whisper
-        with open(tmp_file_path, "rb") as f:
-            transcription = groq_client.audio.transcriptions.create(
-                file=f,
-                model="whisper-large-v3"
-            )
+        file_size = os.path.getsize(file_path)
+        st.write(f"Debug: Saved WAV file at {file_path}, size: {file_size} bytes")
+        
+        # Offer to download WAV for debugging
+        with open(file_path, "rb") as f:
+            st.download_button("Download WAV for Debug", f, file_name=os.path.basename(file_path), mime="audio/wav")
 
-        os.unlink(tmp_file_path)
-        return transcription.text
+        if file_size < 100:
+            st.error("❌ Audio file is too small or empty. Try recording again.")
+            os.unlink(file_path)
+            return None
+
+        retries = 3
+        for attempt in range(retries):
+            try:
+                with open(file_path, "rb") as audio_file:
+                    transcript = groq_client.audio.transcriptions.create(
+                        model="whisper-large-v3",  # Try "whisper-large-v3-turbo" if issues persist
+                        file=audio_file,
+                        response_format="text",
+                        language="en"
+                    )
+                os.unlink(file_path)
+                st.write(f"Debug: Whisper transcription successful: {transcript}")
+                return transcript
+            except Exception as e:
+                if attempt < retries - 1:
+                    st.warning(f"Retrying ({attempt + 1}/{retries})... Error: {str(e)}")
+                    sleep(2)
+                else:
+                    raise e
     except Exception as e:
-        st.error(f"❌ Whisper Transcription Error: {e}")
+        if "500" in str(e):
+            st.error("❌ Groq Server Error: Internal server issue. Try again later or use 'whisper-large-v3-turbo'.")
+        else:
+            st.error(f"❌ Groq Whisper Error: {e}")
+        if os.path.exists(file_path):
+            os.unlink(file_path)
         return None
 
 # ------------------------------
@@ -123,7 +165,7 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 
 # ------------------------------
 # Voice Input Tab
-# ------------------------------
+# ----------------------
 with tab1:
     st.subheader("Browser-Based Voice Recording")
     
@@ -153,7 +195,7 @@ with tab1:
                 st.audio(audio_bytes, format="audio/wav")
                 
                 if st.button("📝 Transcribe & Get Response", type="primary", use_container_width=True):
-                    with st.spinner("🔄 Transcribing with Whisper (Groq)..."):
+                    with st.spinner("🔄 Transcribing with Groq Whisper..."):
                         user_input = transcribe_audio(audio_bytes)
                         
                         if user_input:
@@ -187,7 +229,7 @@ with tab1:
                                             )
                                     os.unlink(tts_file)
         except AttributeError:
-            st.error("❌ Invalid audio data format. Please try again.")
+            st.error("❌ Invalid audio data format. Please try recording again.")
 
 # ------------------------------
 # Text Input Tab
@@ -232,15 +274,19 @@ with tab2:
 with st.expander("🔧 Troubleshooting"):
     st.markdown("""
     ### If recording doesn't work:
-    - **Browser Permissions**: Ensure mic access is granted.
-    - **HTTPS Required**: Use HTTPS (Streamlit Cloud enforces this).
+    - **Browser Permissions**: Ensure mic access is granted (check site settings).
+    - **HTTPS Required**: Use HTTPS (Render enforces this).
     - **No Audio Detected**: Speak clearly; test mic in another app/site.
     - **Groq Transcription Fails**:
-        - Ensure `GROQ_API_KEY` is set in `.env`.
-        - Keep recordings short (5-30s).
-        - Check if audio file size is non-zero.
+        - Ensure `GROQ_API_KEY` is set in `.env` and Render's environment variables.
+        - Keep recordings short (5-30s, <25MB).
+        - Download and test WAV file locally to ensure it's not corrupted.
+        - For 500 errors, try model `whisper-large-v3-turbo` or retry later.
+        - Test API key with `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"`.
     - **Component Issues**: Ensure `streamlit-mic-recorder==0.0.8` is installed.
+    - **Local Storage**: Ensure `./audio_files/` is writable (check permissions on Render).
+    - **Render Deployment**: Check logs for dependency or network errors.
     """)
 
 st.markdown("---")
-st.caption("Powered by Groq Whisper v3 & OpenRouter GPT")
+st.caption("Powered by Groq Whisper-large-v3 & OpenRouter GPT")
