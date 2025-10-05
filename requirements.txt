@@ -10,6 +10,8 @@ av
 pydub
 ffmpeg-python
 faster_whisper
+vosk
+
 
 
 
