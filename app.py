@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import wave
 import assemblyai as aai
 from time import sleep, time as get_time
-import asyncio
+import time
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import numpy as np
@@ -16,6 +16,7 @@ from noisereduce import reduce_noise
 # ------------------------------
 # Load API keys
 # ------------------------------
+# Ensure you have a .env file with OPENROUTER_API_KEY and ASSEMBLYAI_API_KEY
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
@@ -126,6 +127,7 @@ def check_audio_quality(audio_bytes):
         return False
     sample_rate, data = wavfile.read(temp_path)
     os.unlink(temp_path)
+    # Convert to 16-bit for RMS calculation if needed, or handle based on dtype
     data = data.astype(np.float64) 
     rms = np.sqrt(np.mean(data**2)) if data.size > 0 else 0
     st.write(f"Debug: Audio RMS (volume): {rms}")
@@ -147,6 +149,7 @@ def transcribe_audio(audio_bytes):
     clean_file_path = None
     
     try:
+        # 1. Save and validate raw audio
         file_path = save_as_wav(audio_bytes)
         if not file_path:
             st.error("❌ Failed to save audio file for transcription.")
@@ -165,11 +168,13 @@ def transcribe_audio(audio_bytes):
         if not check_audio_quality(audio_bytes):
             return None
 
+        # 2. Apply noise reduction
         sample_rate, data = wavfile.read(file_path)
         reduced_noise = reduce_noise(y=data, sr=sample_rate)
         clean_file_path = file_path.replace(".wav", "_clean.wav")
         wavfile.write(clean_file_path, sample_rate, reduced_noise.astype(np.int16))
 
+        # 3. Configure and transcribe
         config = aai.TranscriptionConfig(boost_low_volume=True)
         transcriber = aai.Transcriber()
         
@@ -208,6 +213,7 @@ def transcribe_audio(audio_bytes):
         st.error(f"❌ AssemblyAI Transcription Error: {e}")
         return None
     finally:
+        # Clean up files
         if file_path and os.path.exists(file_path):
             os.unlink(file_path)
         if clean_file_path and os.path.exists(clean_file_path):
@@ -223,26 +229,31 @@ class AudioProcessor:
 
     def recv(self, frame: av.AudioFrame):
         if frame and st.session_state.recording_active:
+            # Convert frame to raw bytes (16-bit PCM)
             audio_data = frame.to_ndarray().tobytes()
             self.audio_frames.append(audio_data)
 
+            # Real-time RMS check for volume feedback
             samples = np.frombuffer(audio_data, dtype=np.int16)
             rms = np.sqrt(np.mean(samples**2)) if samples.size > 0 else 0
             self.rms_history.append(rms)
-            if len(self.rms_history) > 10:
+            if len(self.rms_history) > 10:  # Smooth over last 10 frames
                 avg_rms = np.mean(self.rms_history[-10:])
                 if avg_rms < 500:
                     st.session_state.warning = "⚠️ Audio too quiet—please speak louder."
 
+            # Initialize transcriber if not started
             if not self.transcriber:
                 config = aai.RealtimeTranscriberConfig(sample_rate=16000, word_boost=["important", "key"])
                 self.transcriber = aai.RealtimeTranscriber(config=config)
                 self.transcriber.connect()
                 st.session_state.transcription = ""
 
+            # Send audio chunk to AssemblyAI
             if self.transcriber.is_connected():
                 self.transcriber.send_audio(audio_data)
 
+            # Update transcription live
             for transcript in self.transcriber.streaming_transcript():
                 if transcript and transcript.text:
                     st.session_state.transcription = transcript.text
@@ -269,13 +280,9 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Browser-Based Voice Recording")
     
-    # Initialize WebRTC streamer with error handling and asyncio workaround
+    # Initialize WebRTC streamer
     ctx = None
     try:
-        # Workaround for asyncio event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
         ctx = webrtc_streamer(
             key="audio-recorder",
             mode=WebRtcMode.SENDRECV,
@@ -294,8 +301,6 @@ with tab1:
         st.write("### Troubleshooting:")
         st.write("- Ensure `streamlit-webrtc` is updated (`pip install streamlit-webrtc --upgrade`).")
         st.write("- Verify microphone permissions are granted.")
-        st.write("- Check for PyTorch conflicts; uninstall if unused (`pip uninstall torch`).")
-        ctx = None
 
     # Check stream state with timeout for permission prompt
     if ctx:
@@ -314,33 +319,27 @@ with tab1:
     
     with col1:
         if st.button("Start Recording", use_container_width=True, disabled=st.session_state.recording_active or not (ctx and ctx.state.playing)):
-            if ctx:
-                st.session_state.recording_active = True
-                st.session_state.audio_frames = []
-                if hasattr(ctx, 'audio_processor') and ctx.audio_processor:
-                    ctx.audio_processor.reset()
-                st.session_state.warning = None
-                st.rerun()
-            else:
-                st.error("❌ WebRTC context not available. Check initialization.")
-                
+            st.session_state.recording_active = True
+            st.session_state.audio_frames = []
+            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
+                ctx.audio_processor.reset()
+            st.session_state.warning = None
+            st.rerun()
+            
     with col2:
         if st.button("Stop Recording", use_container_width=True, disabled=not st.session_state.recording_active):
-            if ctx and st.session_state.recording_active:
-                st.session_state.recording_active = False
-                if hasattr(ctx, 'audio_processor') and ctx.audio_processor:
-                    ctx.audio_processor.reset()
-                    st.session_state.audio_bytes = b''.join(ctx.audio_processor.audio_frames)
-                    st.session_state.transcription = ctx.audio_processor.last_transcript
-                    if st.session_state.audio_bytes:
-                        st.success("✅ Recording captured!")
-                        st.audio(st.session_state.audio_bytes, format="audio/wav")
-                    else:
-                        st.error("❌ No audio captured. Ensure mic is working.")
-                st.rerun()
-            else:
-                st.error("❌ Recording not active or WebRTC context missing.")
-                
+            st.session_state.recording_active = False
+            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
+                ctx.audio_processor.reset()
+                st.session_state.audio_bytes = b''.join(ctx.audio_processor.audio_frames)
+                st.session_state.transcription = ctx.audio_processor.last_transcript
+                if st.session_state.audio_bytes:
+                    st.success("✅ Recording captured!")
+                    st.audio(st.session_state.audio_bytes, format="audio/wav")
+                else:
+                    st.error("❌ No audio captured. Ensure mic is working.")
+            st.rerun()
+
     with col3:
         if st.button("Clear Recording", use_container_width=True, disabled=st.session_state.recording_active):
             st.session_state.audio_frames = []
@@ -449,7 +448,6 @@ with st.expander("🔧 Troubleshooting"):
     - **Component Issues**: Update all dependencies to latest versions.
     - **Local Storage**: Ensure `./audio_files/` is writable.
     - **Render Deployment**: Check logs for WebRTC or API errors.
-    - **Asyncio Error**: If `no running event loop` persists, ensure a clean environment and update Streamlit.
     """)
 
 st.markdown("---")
