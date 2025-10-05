@@ -12,6 +12,7 @@ ffmpeg-python
 faster_whisper
 vosk
 soundfile
+scipy
 
 
 
