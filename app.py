@@ -7,47 +7,29 @@ import wave
 import assemblyai as aai
 from time import sleep
 import time
-import io
-import threading
-
-# --- Try to Import Necessary Components ---
-# Optional: pydub for audio processing (works on Render without PyAudio)
-try:
-    from pydub import AudioSegment
-    from pydub.effects import normalize
-    HAS_PYDUB = True
-except ImportError:
-    HAS_PYDUB = False
-
-# Try to import mic_recorder as main input
-try:
-    from streamlit_mic_recorder import mic_recorder
-    HAS_MIC_RECORDER = True
-except ImportError:
-    HAS_MIC_RECORDER = False
-    
-# Import for WebRTC is kept commented out for a cleaner, more reliable focus
-# try:
-#     from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-#     import av
-#     HAS_WEBRTC = True
-# except ImportError:
-#     HAS_WEBRTC = False
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
+import numpy as np
+from scipy.io import wavfile
+from noisereduce import reduce_noise
 
 # ------------------------------
-# Load API keys & Setup
+# Load API keys
 # ------------------------------
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
+# Set AssemblyAI API key
 if ASSEMBLYAI_API_KEY:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
 else:
     aai.settings.api_key = None
 
+# API endpoints
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Local directory for saving audio files
 AUDIO_DIR = "./audio_files"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
@@ -56,19 +38,26 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 # ------------------------------
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
 
-st.title("🎙️ Optimized Voice Bot")
-st.write("Record voice directly in your browser! Microphone normalization is active. 🎧")
+st.title("🎙️ Live Voice Bot")
+st.write("Record voice directly in your browser! 🎧 (Grant mic permission when prompted.)")
 
-# --- Initial Warnings/Setup Checks ---
-if not HAS_MIC_RECORDER:
-    st.error("❌ **Dependency Missing:** `streamlit-mic-recorder` is required for voice input.")
-    st.code("pip install streamlit-mic-recorder", language="bash")
-if not HAS_PYDUB:
-    st.warning("⚠️ **Improvement Tip:** `pydub` is recommended for volume normalization to fix empty transcription issues. Install with: `pip install pydub`")
-    st.info("Without `pydub`, audio quality will be highly dependent on the user's microphone setup.")
+# Microphone setup guide
+with st.expander("📱 Microphone Setup (Important!)"):
+    st.markdown("""
+    ### Before Recording:
+    1. **Allow** microphone access when prompted by your browser.
+    2. **Test** your mic in browser settings.
+    3. **Use headphones** if noisy.
+    4. Recording starts with 'Start Recording' button.
+    5. Speak clearly 6-12 inches from mic for 5-30s.
+    """)
 
+if 'audio_frames' not in st.session_state:
+    st.session_state.audio_frames = []
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
+if 'recording_active' not in st.session_state:
+    st.session_state.recording_active = False
 
 # ------------------------------
 # Helper Functions
@@ -99,64 +88,44 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-# --- OPTIMIZED AUDIO SAVE/NORMALIZATION FUNCTION ---
-def save_as_wav(audio_bytes, sample_rate=48000, channels=1, sample_width=2):
-    """Saves raw audio bytes as WAV, with optional Pydub normalization."""
-    if not audio_bytes or len(audio_bytes) < 1000:
-        st.error("❌ Audio data too small or empty. Record for at least 2 seconds.")
-        return None
-        
-    filename = f"recording_{int(time.time())}.wav"
-    file_path = os.path.join(AUDIO_DIR, filename)
-    
+def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
     try:
-        if HAS_PYDUB:
-            # 1. Load raw bytes into pydub AudioSegment
-            audio_io = io.BytesIO(audio_bytes)
-            # mic_recorder uses a simple 16-bit PCM format
-            audio_segment = AudioSegment.from_raw(
-                audio_io,
-                sample_width=sample_width, 
-                frame_rate=sample_rate, 
-                channels=channels
-            )
-            
-            # 2. Normalize the volume (key step for transcription reliability)
-            st.info("⚙️ Normalizing audio volume for better transcription...")
-            normalized_audio = normalize(audio_segment)
-
-            # 3. Export normalized audio to WAV file
-            normalized_audio.export(file_path, format="wav")
-            
-        else:
-            # Fallback to direct wave file writing
-            with wave.open(file_path, 'wb') as wf:
-                wf.setnchannels(channels)
-                wf.setsampwidth(sample_width)
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio_bytes)
-
-        file_size = os.path.getsize(file_path)
-        st.write(f"Debug: Saved WAV file at {file_path}, size: {file_size} bytes")
-        
-        if file_size < 1000:
-            st.error("❌ Audio file too small after processing. Record for at least 5 seconds.")
-            os.unlink(file_path)
-            return None
-            
+        filename = f"recording_{int(time.time())}.wav"
+        file_path = os.path.join(AUDIO_DIR, filename)
+        with wave.open(file_path, 'wb') as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_bytes)
+        st.write(f"Debug: Saved WAV file at {file_path}, size: {os.path.getsize(file_path)} bytes")
+        # Verify WAV properties
+        with wave.open(file_path, 'rb') as wf_read:
+            st.write(f"Debug: WAV sample rate: {wf_read.getframerate()}, channels: {wf_read.getnchannels()}")
         return file_path
     except Exception as e:
-        st.error(f"❌ Error saving/processing WAV file: {e}")
-        if os.path.exists(file_path):
-            os.unlink(file_path)
+        st.error(f"❌ Error saving WAV file: {e}")
         return None
 
+def check_audio_quality(audio_bytes):
+    temp_path = save_as_wav(audio_bytes)
+    if not temp_path:
+        return False
+    sample_rate, data = wavfile.read(temp_path)
+    os.unlink(temp_path)
+    rms = np.sqrt(np.mean(data**2)) if data.size > 0 else 0
+    st.write(f"Debug: Audio RMS (volume): {rms}")
+    if rms < 500:
+        st.warning("⚠️ Audio too quiet—please speak louder and retry.")
+        return False
+    return True
+
 def transcribe_audio(audio_bytes):
+    if not audio_bytes or len(audio_bytes) == 0:
+        st.error("❌ No audio data provided. Recording may have failed.")
+        return None
     if not aai.settings.api_key:
         st.error("❌ AssemblyAI API key not found. Add ASSEMBLYAI_API_KEY to .env file.")
         return None
-    
-    file_path = None
     try:
         file_path = save_as_wav(audio_bytes)
         if not file_path:
@@ -165,131 +134,209 @@ def transcribe_audio(audio_bytes):
         file_size = os.path.getsize(file_path)
         st.write(f"Debug: WAV file size: {file_size} bytes")
         
-        # Configure AssemblyAI with best model for noise tolerance
-        config = aai.TranscriptionConfig(
-            language_code="en",
-            speech_model=aai.SpeechModel.best,  # Best model for noise handling
-            punctuate=True,
-            format_text=True
-        )
+        with open(file_path, "rb") as f:
+            st.download_button("Download WAV for Debug", f, file_name=os.path.basename(file_path), mime="audio/wav")
+
+        if file_size < 1000:
+            st.error("❌ Audio file too small. Record for at least 5 seconds.")
+            os.unlink(file_path)
+            return None
+
+        if not check_audio_quality(audio_bytes):
+            os.unlink(file_path)
+            return None
+
+        sample_rate, data = wavfile.read(file_path)
+        reduced_noise = reduce_noise(y=data, sr=sample_rate)
+        clean_file_path = file_path.replace(".wav", "_clean.wav")
+        wavfile.write(clean_file_path, sample_rate, reduced_noise.astype(np.int16))
+
+        config = aai.TranscriptionConfig(boost_low_volume=True)
         transcriber = aai.Transcriber()
         
         retries = 3
         for attempt in range(retries):
             try:
-                st.info(f"🔄 Transcribing with AssemblyAI (attempt {attempt + 1}/{retries})...")
-                transcript = transcriber.transcribe(file_path, config=config)
+                transcript = transcriber.transcribe(clean_file_path)
+                st.write(f"Debug: Transcript status: {transcript.status}")
+                st.write(f"Debug: Transcript object: {transcript}")
+                st.write(f"Debug: Has text attribute: {hasattr(transcript, 'text')}")
+                text = transcript.text.strip() if transcript.text else None
+                st.write(f"Debug: Transcript text: '{text}'")
                 
                 if transcript.status == aai.TranscriptStatus.error:
                     raise Exception(f"Transcription error: {transcript.error}")
                 
-                text = transcript.text.strip() if hasattr(transcript, 'text') and transcript.text else None
+                if text and text.lower() in ["thank you", "thank you.", "thanks for watching"]:
+                    st.warning(f"⚠️ Possible hallucination detected: '{text}'. Proceeding anyway.")
                 
-                # Filter out possible empty/hallucinated text
-                if not text or len(text.split()) < 2 or text.lower() in ["thank you", "thanks for watching", ""]:
-                    st.warning(f"⚠️ Empty/Short transcription: '{text}'. Try a clearer recording.")
-                    if attempt < retries - 1:
-                        sleep(2) # Wait before retrying
-                        continue # Go to next attempt
-                    else:
-                        return None
-                
-                st.success(f"✅ Transcription successful!")
-                return text
-                
-            except Exception as e:
+                os.unlink(file_path)
+                os.unlink(clean_file_path)
+                if text:
+                    st.write(f"Debug: Transcription successful: '{text}'")
+                    return text
+                else:
+                    st.warning("⚠️ Empty transcription. Possible issues:")
+                    st.write("- No speech detected in the audio")
+                    st.write("- Audio too quiet - speak louder")
+                    st.write("- Wrong format - download the WAV and check if you can hear yourself")
+                    st.write("- Too short - record for at least 5 seconds")
+                    st.write("- Background noise - try in a quieter environment")
+                    return None
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 422:
+                    st.error(f"❌ Critical Upload Failure: 422 Unprocessable Entity. The audio file may be invalid. Download the WAV to verify.")
+                    with open(file_path, "rb") as f:
+                        st.download_button("Download WAV for Manual Upload", f, file_name=os.path.basename(file_path), mime="audio/wav")
+                else:
+                    st.error(f"❌ Transcription Error: {e}")
                 if attempt < retries - 1:
-                    st.warning(f"Retrying ({attempt + 1}/{retries})... Error: {str(e)}")
+                    st.warning(f"Retrying ({attempt + 1}/{retries})...")
                     sleep(2)
                 else:
-                    raise e
-                    
+                    raise
+            except Exception as e:
+                st.error(f"❌ Transcription Error: {e}")
+                if attempt < retries - 1:
+                    st.warning(f"Retrying ({attempt + 1}/{retries})...")
+                    sleep(2)
+                else:
+                    raise
     except Exception as e:
         st.error(f"❌ AssemblyAI Transcription Error: {e}")
-        return None
-    finally:
-        # Clean up the file
-        if file_path and os.path.exists(file_path):
+        if os.path.exists(file_path):
             os.unlink(file_path)
+        if os.path.exists(clean_file_path):
+            os.unlink(clean_file_path)
+        return None
+
+# Custom Audio Processor for streamlit-webrtc
+class AudioProcessor:
+    def __init__(self):
+        self.audio_frames = []
+
+    def recv(self, frame: av.AudioFrame):
+        if frame and st.session_state.recording_active:
+            self.audio_frames.append(frame.to_ndarray().tobytes())
+            st.write(f"Debug: Received audio frame, total frames: {len(self.audio_frames)}")
+        return frame
+
+    def reset(self):
+        self.audio_frames = []
 
 # ------------------------------
 # Main Interface Tabs
 # ------------------------------
-tab1, tab2 = st.tabs(["🎙️ Voice Chat (Recommended)", "📝 Text Chat"])
+tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 
 # ------------------------------
-# Voice Input Tab (Simple Recorder) - The Core Feature
-# ------------------------------
+# Voice Input Tab
+# ----------------------
 with tab1:
-    st.subheader("🎤 Voice Input Chat")
-    st.success("✨ **Easy to use!** Your audio is automatically normalized for better accuracy.")
+    st.subheader("Browser-Based Voice Recording")
     
-    if not HAS_MIC_RECORDER:
-        st.stop()
-
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        audio_data = mic_recorder(
-            start_prompt="🎤 Start Recording",
-            stop_prompt="🛑 Stop Recording",
-            key="recommended_mic_recorder"
+    # Initialize WebRTC streamer with SENDRECV mode
+    ctx = None
+    try:
+        ctx = webrtc_streamer(
+            key="audio-recorder",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTCConfiguration({
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}, {"urls": ["stun:stun1.l.google.com:19302"]}],
+                "sdpSemantics": "unified-plan"
+            }),
+            audio_processor_factory=lambda: AudioProcessor(),
+            media_stream_constraints={"video": False, "audio": True},
+            async_processing=True,
         )
-    
-    with col2:
-        if st.button("🔄 Clear & Reset", use_container_width=True, key="recommended_clear"):
-            st.session_state.audio_bytes = None
+    except Exception as e:
+        st.error(f"❌ WebRTC initialization failed: {e}")
+        st.write("Please ensure microphone permissions are granted and try a compatible browser (e.g., Chrome).")
+
+    # Check stream state and provide feedback
+    if ctx:
+        if not ctx.state.playing:
+            st.warning("⚠️ Waiting for microphone access. Please grant permission when prompted by your browser.")
+        else:
+            st.write("🎙️ Microphone is active. Start recording when ready.")
+
+    # Control recording state with safeguards
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("Start Recording", use_container_width=True) and not st.session_state.recording_active:
+            st.session_state.recording_active = True
+            st.session_state.audio_frames = []
+            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
+                ctx.audio_processor.reset()
+            else:
+                st.session_state.audio_frames = []  # Fallback reset
             st.rerun()
-    
-    if audio_data and 'bytes' in audio_data:
-        audio_bytes = audio_data.get('bytes')
-        
-        if st.session_state.audio_bytes is None or len(st.session_state.audio_bytes) != len(audio_bytes):
-            st.session_state.audio_bytes = audio_bytes
-            st.success("✅ Recording complete!")
-            st.audio(audio_bytes, format="audio/wav")
+    with col2:
+        if st.button("Stop Recording", use_container_width=True) and st.session_state.recording_active:
+            st.session_state.recording_active = False
+            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor and ctx.audio_processor.audio_frames:
+                st.session_state.audio_frames = ctx.audio_processor.audio_frames
+                st.session_state.audio_bytes = b''.join(st.session_state.audio_frames)
+                if len(st.session_state.audio_frames) < 10:
+                    st.error("❌ Too few audio frames captured. Record for at least 5 seconds.")
+                else:
+                    st.success("✅ Recording processed!")
+                    st.write(f"Debug: Audio bytes length: {len(st.session_state.audio_bytes)}")
+                    st.audio(st.session_state.audio_bytes, format="audio/wav")
+            else:
+                st.error("❌ No audio frames captured. Ensure mic is working and permissions are granted.")
+            st.rerun()
+
+    if st.button("🔄 Clear Recording", use_container_width=True):
+        st.session_state.audio_frames = []
+        st.session_state.audio_bytes = None
+        st.session_state.recording_active = False
+        if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
+            ctx.audio_processor.reset()
+        else:
+            st.session_state.audio_frames = []  # Fallback reset
+        st.rerun()
+
+    if st.session_state.audio_bytes and st.button("Process Recording", type="primary", use_container_width=True):
+        with st.spinner("🔄 Transcribing with AssemblyAI..."):
+            user_input = transcribe_audio(st.session_state.audio_bytes)
             
-            # Auto-process
-            with st.spinner("🔄 Transcribing and processing audio..."):
-                user_input = transcribe_audio(audio_bytes)
+            if user_input:
+                st.markdown("### 🎤 You said:")
+                st.info(f'"{user_input}"')
                 
-                if user_input:
-                    st.markdown("### 🎤 You Said:")
-                    st.info(f'"{user_input}"')
+                with st.spinner("🤔 Getting AI response..."):
+                    answer = get_response(user_input)
+                
+                if answer:
+                    st.markdown("---")
+                    st.markdown("### 🤖 Bot Response:")
+                    st.write(answer)
                     
-                    with st.spinner("🤔 Getting AI response..."):
-                        answer = get_response(user_input)
+                    with st.spinner("🔊 Generating voice response..."):
+                        tts_file = text_to_speech(answer)
                     
-                    if answer:
-                        st.markdown("---")
-                        st.markdown("### 🤖 Bot Response:")
-                        st.write(answer)
-                        
-                        with st.spinner("🔊 Generating voice response..."):
-                            tts_file = text_to_speech(answer)
-                        
-                        if tts_file:
-                            col_a, col_b = st.columns([3, 1])
-                            with col_a:
-                                st.audio(tts_file, format="audio/mp3")
-                            with col_b:
-                                with open(tts_file, "rb") as f:
-                                    st.download_button(
-                                        label="📥 Download",
-                                        data=f,
-                                        file_name="response.mp3",
-                                        mime="audio/mp3",
-                                        key="recommended_voice_download",
-                                        use_container_width=True
-                                    )
-                            os.unlink(tts_file)
-            st.stop() # Stop the rerun cycle after processing
+                    if tts_file:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.audio(tts_file, format="audio/mp3")
+                        with col_b:
+                            with open(tts_file, "rb") as f:
+                                st.download_button(
+                                    label="📥 Download",
+                                    data=f,
+                                    file_name="response.mp3",
+                                    mime="audio/mp3",
+                                    key="voice_download",
+                                    use_container_width=True
+                                )
+                        os.unlink(tts_file)
 
 # ------------------------------
 # Text Input Tab
 # ------------------------------
 with tab2:
-    st.subheader("📝 Text Input Chat")
+    st.subheader("Text Input")
     user_text = st.text_area("Type your message:", height=150, placeholder="Ask me anything...")
     
     if st.button("Send Text", type="primary"):
@@ -325,19 +372,20 @@ with tab2:
 # ------------------------------
 # Troubleshooting Section
 # ------------------------------
-with st.expander("🔧 Troubleshooting & Audio Quality"):
+with st.expander("🔧 Troubleshooting"):
     st.markdown("""
-    ### Why Normalize Audio?
-    The primary issue (empty transcription) occurs because the raw audio captured by the browser microphone is often too quiet or contains too much noise/echo for the transcription service to identify clear speech.
-    
-    By installing **`pydub`** (`pip install pydub`), your app now **automatically normalizes the volume** (`pydub.effects.normalize`) right before sending it to AssemblyAI. This dramatically improves transcription accuracy in noisy or low-volume environments.
-    
-    ### Troubleshooting Tips:
-    * **Always use headphones** 🎧 to prevent speaker echo from being picked up by the microphone.
-    * **Install `pydub`** if you haven't yet, as it's the core fix for noisy audio.
-    * Ensure your **`ASSEMBLYAI_API_KEY`** and **`OPENROUTER_API_KEY`** are correctly set in your `.env` file and loaded.
-    * Record for a minimum of 3-5 seconds.
+    ### If recording doesn't work or transcribes incorrectly:
+    - **Browser Permissions**: Grant mic access when prompted (check site settings).
+    - **HTTPS Required**: Use HTTPS (Render enforces this; locally use ngrok).
+    - **No Audio Detected**: Speak clearly for 5-10s; test mic in another app.
+    - **AssemblyAI Transcription Issues**:
+        - Error 422: Download WAV and verify it plays. Ensure 16kHz mono PCM format.
+        - Ensure `ASSEMBLYAI_API_KEY` is valid and not rate-limited.
+        - For 'Empty' errors, adjust volume, reduce noise, or increase length.
+    - **Component Issues**: Update `streamlit-webrtc` to latest version.
+    - **Local Storage**: Ensure `./audio_files/` is writable.
+    - **Render Deployment**: Check logs for WebRTC or API errors.
     """)
 
 st.markdown("---")
-st.caption("Optimized with Audio Normalization (via pydub) | Powered by AssemblyAI & OpenRouter")
+st.caption("Powered by AssemblyAI & OpenRouter GPT")
