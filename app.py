@@ -12,6 +12,11 @@ import av
 import numpy as np
 from scipy.io import wavfile
 from noisereduce import reduce_noise
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # ------------------------------
 # Load API keys
@@ -51,6 +56,7 @@ with st.expander("📱 Microphone Setup (Important!)"):
     4. Recording starts with the 'Start Recording' button.
     5. Speak clearly 6-12 inches from mic for 5-30s.
     6. **HTTPS Required**: Use HTTPS (locally, use `ngrok http 8501` for secure testing).
+    7. **Render Note**: WebRTC may fail on Render due to UDP restrictions; consider batch mode if issues persist.
     """)
 
 # ------------------------------
@@ -106,14 +112,14 @@ def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
         frame_size = channels * sample_width
         total_frames = len(audio_bytes) // frame_size
         valid_bytes = audio_bytes[:total_frames * frame_size]
-        st.write(f"Debug: Original bytes length: {len(audio_bytes)}, Adjusted to: {len(valid_bytes)} frames")
+        logger.debug(f"Original bytes length: {len(audio_bytes)}, Adjusted to: {len(valid_bytes)} frames")
 
         with wave.open(file_path, 'wb') as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(sample_width)
             wf.setframerate(sample_rate)
             wf.writeframes(valid_bytes)
-        st.write(f"Debug: Saved WAV file at {file_path}, size: {os.path.getsize(file_path)} bytes")
+        logger.debug(f"Saved WAV file at {file_path}, size: {os.path.getsize(file_path)} bytes")
         return file_path
     except Exception as e:
         st.error(f"❌ Error saving WAV file: {e}")
@@ -128,7 +134,7 @@ def check_audio_quality(audio_bytes):
     os.unlink(temp_path)
     data = data.astype(np.float64) 
     rms = np.sqrt(np.mean(data**2)) if data.size > 0 else 0
-    st.write(f"Debug: Audio RMS (volume): {rms}")
+    logger.debug(f"Audio RMS (volume): {rms}")
     if rms < 500:  # Threshold can be tuned
         st.warning("⚠️ Audio too quiet—please speak louder and retry.")
         return False
@@ -153,7 +159,7 @@ def transcribe_audio(audio_bytes):
             return None
 
         file_size = os.path.getsize(file_path)
-        st.write(f"Debug: WAV file size: {file_size} bytes")
+        logger.debug(f"WAV file size: {file_size} bytes")
         
         with open(file_path, "rb") as f:
             st.download_button("Download WAV for Debug", f, file_name=os.path.basename(file_path), mime="audio/wav")
@@ -176,15 +182,15 @@ def transcribe_audio(audio_bytes):
         retries = 3
         for attempt in range(retries):
             try:
-                st.write(f"Debug: Attempting transcription (Attempt {attempt + 1}/{retries})...")
+                logger.debug(f"Attempting transcription (Attempt {attempt + 1}/{retries})...")
                 transcript = transcriber.transcribe(clean_file_path, config=config)
-                st.write(f"Debug: Transcript status: {transcript.status}")
+                logger.debug(f"Transcript status: {transcript.status}")
 
                 if transcript.status == aai.TranscriptStatus.error:
                     raise Exception(f"Transcription error: {transcript.error}")
 
                 text = transcript.text.strip() if hasattr(transcript, 'text') and transcript.text else None
-                st.write(f"Debug: Transcript text: '{text}'")
+                logger.debug(f"Transcript text: '{text}'")
 
                 if text:
                     return text
@@ -213,7 +219,7 @@ def transcribe_audio(audio_bytes):
         if clean_file_path and os.path.exists(clean_file_path):
             os.unlink(clean_file_path)
 
-# Custom Audio Processor for streamlit-webrtc
+# Custom Audio Processor for streamlit-webrtc with error handling
 class AudioProcessor:
     def __init__(self):
         self.audio_frames = []
@@ -223,30 +229,34 @@ class AudioProcessor:
 
     def recv(self, frame: av.AudioFrame):
         if frame and st.session_state.recording_active:
-            audio_data = frame.to_ndarray().tobytes()
-            self.audio_frames.append(audio_data)
+            try:
+                audio_data = frame.to_ndarray().tobytes()
+                self.audio_frames.append(audio_data)
 
-            samples = np.frombuffer(audio_data, dtype=np.int16)
-            rms = np.sqrt(np.mean(samples**2)) if samples.size > 0 else 0
-            self.rms_history.append(rms)
-            if len(self.rms_history) > 10:
-                avg_rms = np.mean(self.rms_history[-10:])
-                if avg_rms < 500:
-                    st.session_state.warning = "⚠️ Audio too quiet—please speak louder."
+                samples = np.frombuffer(audio_data, dtype=np.int16)
+                rms = np.sqrt(np.mean(samples**2)) if samples.size > 0 else 0
+                self.rms_history.append(rms)
+                if len(self.rms_history) > 10:
+                    avg_rms = np.mean(self.rms_history[-10:])
+                    if avg_rms < 500:
+                        st.session_state.warning = "⚠️ Audio too quiet—please speak louder."
 
-            if not self.transcriber:
-                config = aai.RealtimeTranscriberConfig(sample_rate=16000, word_boost=["important", "key"])
-                self.transcriber = aai.RealtimeTranscriber(config=config)
-                self.transcriber.connect()
-                st.session_state.transcription = ""
+                if not self.transcriber:
+                    config = aai.RealtimeTranscriberConfig(sample_rate=16000, word_boost=["important", "key"])
+                    self.transcriber = aai.RealtimeTranscriber(config=config)
+                    self.transcriber.connect()
+                    st.session_state.transcription = ""
 
-            if self.transcriber.is_connected():
-                self.transcriber.send_audio(audio_data)
+                if self.transcriber.is_connected():
+                    self.transcriber.send_audio(audio_data)
 
-            for transcript in self.transcriber.streaming_transcript():
-                if transcript and transcript.text:
-                    st.session_state.transcription = transcript.text
-                    self.last_transcript = transcript.text
+                for transcript in self.transcriber.streaming_transcript():
+                    if transcript and transcript.text:
+                        st.session_state.transcription = transcript.text
+                        self.last_transcript = transcript.text
+            except Exception as e:
+                logger.error(f"Error in AudioProcessor.recv: {e}")
+                st.session_state.warning = f"⚠️ WebRTC/Transcription error: {e}"
         return frame
 
     def reset(self):
@@ -269,7 +279,7 @@ tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
 with tab1:
     st.subheader("Browser-Based Voice Recording")
     
-    # Initialize WebRTC streamer with error handling and asyncio workaround
+    # Initialize WebRTC streamer with error handling and fallback
     ctx = None
     try:
         # Workaround for asyncio event loop
@@ -280,12 +290,32 @@ with tab1:
             key="audio-recorder",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTCConfiguration({
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}, {"urls": ["stun:stun1.l.google.com:19302"]}],
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                    {"urls": ["stun:stun1.l.google.com:19302"]},
+                    # Add TURN for relay (free public server)
+                    {
+                        "urls": "turn:openrelay.metered.ca:80",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject",
+                    },
+                    {
+                        "urls": "turn:openrelay.metered.ca:443",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject",
+                    },
+                    {
+                        "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject",
+                    }
+                ],
                 "sdpSemantics": "unified-plan"
             }),
             audio_processor_factory=lambda: AudioProcessor(),
             media_stream_constraints={"video": False, "audio": True},
             async_processing=True,
+            on_error=lambda exc: logger.error(f"WebRTC Error: {exc}"),
         )
         if ctx and st.session_state.stream_start_time is None:
             st.session_state.stream_start_time = get_time()
@@ -293,8 +323,8 @@ with tab1:
         st.error(f"❌ WebRTC initialization failed: {e}")
         st.write("### Troubleshooting:")
         st.write("- Ensure `streamlit-webrtc` is updated (`pip install streamlit-webrtc --upgrade`).")
-        st.write("- Verify microphone permissions are granted.")
-        st.write("- Check for PyTorch conflicts; uninstall if unused (`pip uninstall torch`).")
+        st.write("- Render may block UDP ports; try batch mode or contact Render support.")
+        st.write("- Check Streamlit version (use 1.36.0 or higher with `st.rerun()`).")
         ctx = None
 
     # Check stream state with timeout for permission prompt
@@ -358,7 +388,7 @@ with tab1:
     if st.session_state.transcription:
         st.markdown("### 🎤 Live Transcription:")
         st.info(st.session_state.transcription)
-        st.caption("This updates in real-time while recording.")
+        st.caption("This updates in real-time while recording (if WebRTC works).")
 
     # Main Processing Button (for AI response after stopping)
     if st.session_state.transcription and st.button("Process Transcription", type="primary", use_container_width=True, disabled=st.session_state.recording_active):
@@ -443,13 +473,14 @@ with st.expander("🔧 Troubleshooting"):
         - Empty transcription: Check for no speech, low volume, wrong format, short duration, or noise.
         - Ensure `ASSEMBLYAI_API_KEY` is valid and not rate-limited.
     - **WebRTC Issues**:
-        - Error 'module object is not callable': Update `streamlit-webrtc` (`pip install streamlit-webrtc --upgrade`).
+        - Error 'module 'streamlit' has no attribute 'experimental_rerun'': Update to Streamlit 1.36.0+ and use `st.rerun()`.
+        - Render may block UDP ports; try batch mode or contact Render support.
+        - Update `streamlit-webrtc` (`pip install streamlit-webrtc --upgrade`).
         - Verify compatible browser (e.g., Chrome) and HTTPS.
-        - Check console (F12) for errors.
+        - Check Render logs for detailed errors.
     - **Component Issues**: Update all dependencies to latest versions.
     - **Local Storage**: Ensure `./audio_files/` is writable.
-    - **Render Deployment**: Check logs for WebRTC or API errors.
-    - **Asyncio Error**: If `no running event loop` persists, ensure a clean environment and update Streamlit.
+    - **Render Deployment**: Use Python 3.11 or 3.12 (avoid 3.13).
     """)
 
 st.markdown("---")
