@@ -1,13 +1,15 @@
 streamlit
-streamlit-webrtc
 requests
 gtts
-speechrecognition
-numpy
-pyaudio
-streamlit-mic-recorder
+python-dotenv
 assemblyai
-noisereduce
+streamlit-mic-recorder
+streamlit-webrtc
+aiortc
+av
+pydub
+ffmpeg-python
+
 
 
 
