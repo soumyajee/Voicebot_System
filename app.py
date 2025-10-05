@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 import wave
 import assemblyai as aai
-from time import sleep
+from time import sleep, time as get_time
 import time
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
@@ -45,11 +45,12 @@ st.write("Record voice directly in your browser! 🎧 (Grant mic permission when
 with st.expander("📱 Microphone Setup (Important!)"):
     st.markdown("""
     ### Before Recording:
-    1. **Allow** microphone access when prompted by your browser.
-    2. **Test** your mic in browser settings.
-    3. **Use headphones** if noisy.
-    4. Recording starts with 'Start Recording' button.
+    1. **Allow Microphone Access**: When prompted by your browser, click 'Allow' to grant mic access.
+    2. **Check Browser Settings**: Go to `chrome://settings/content/microphone` (Chrome) or equivalent to ensure your mic is enabled and selected.
+    3. **Use Headphones** if noisy to avoid echo.
+    4. Recording starts with the 'Start Recording' button.
     5. Speak clearly 6-12 inches from mic for 5-30s.
+    6. **HTTPS Required**: Use HTTPS (locally, use `ngrok http 8501` for secure testing).
     """)
 
 if 'audio_frames' not in st.session_state:
@@ -58,6 +59,10 @@ if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
 if 'recording_active' not in st.session_state:
     st.session_state.recording_active = False
+if 'stream_start_time' not in st.session_state:
+    st.session_state.stream_start_time = None
+if 'transcription' not in st.session_state:
+    st.session_state.transcription = None
 
 # ------------------------------
 # Helper Functions
@@ -81,7 +86,7 @@ def get_response(prompt):
 def text_to_speech(text):
     try:
         tts = gTTS(text)
-        temp_file = os.path.join(AUDIO_DIR, f"tts_{int(time.time())}.mp3")
+        temp_file = os.path.join(AUDIO_DIR, f"tts_{int(get_time())}.mp3")
         tts.save(temp_file)
         return temp_file
     except Exception as e:
@@ -90,15 +95,20 @@ def text_to_speech(text):
 
 def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
     try:
-        filename = f"recording_{int(time.time())}.wav"
+        filename = f"recording_{int(get_time())}.wav"
         file_path = os.path.join(AUDIO_DIR, filename)
+        # Calculate expected frame size in bytes
+        frame_size = channels * sample_width
+        total_frames = len(audio_bytes) // frame_size
+        valid_bytes = audio_bytes[:total_frames * frame_size]  # Truncate to whole frames
+        st.write(f"Debug: Original bytes length: {len(audio_bytes)}, Adjusted to: {len(valid_bytes)} frames")
+
         with wave.open(file_path, 'wb') as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(sample_width)
             wf.setframerate(sample_rate)
-            wf.writeframes(audio_bytes)
+            wf.writeframes(valid_bytes)
         st.write(f"Debug: Saved WAV file at {file_path}, size: {os.path.getsize(file_path)} bytes")
-        # Verify WAV properties
         with wave.open(file_path, 'rb') as wf_read:
             st.write(f"Debug: WAV sample rate: {wf_read.getframerate()}, channels: {wf_read.getnchannels()}")
         return file_path
@@ -147,6 +157,7 @@ def transcribe_audio(audio_bytes):
             return None
 
         sample_rate, data = wavfile.read(file_path)
+        st.write(f"Debug: Read sample rate: {sample_rate}, data length: {len(data)}")
         reduced_noise = reduce_noise(y=data, sr=sample_rate)
         clean_file_path = file_path.replace(".wav", "_clean.wav")
         wavfile.write(clean_file_path, sample_rate, reduced_noise.astype(np.int16))
@@ -161,7 +172,7 @@ def transcribe_audio(audio_bytes):
                 st.write(f"Debug: Transcript status: {transcript.status}")
                 st.write(f"Debug: Transcript object: {transcript}")
                 st.write(f"Debug: Has text attribute: {hasattr(transcript, 'text')}")
-                text = transcript.text.strip() if transcript.text else None
+                text = transcript.text.strip() if hasattr(transcript, 'text') and transcript.text else None
                 st.write(f"Debug: Transcript text: '{text}'")
                 
                 if transcript.status == aai.TranscriptStatus.error:
@@ -249,16 +260,33 @@ with tab1:
             media_stream_constraints={"video": False, "audio": True},
             async_processing=True,
         )
+        if ctx and st.session_state.stream_start_time is None:
+            st.session_state.stream_start_time = get_time()
     except Exception as e:
         st.error(f"❌ WebRTC initialization failed: {e}")
-        st.write("Please ensure microphone permissions are granted and try a compatible browser (e.g., Chrome).")
+        st.write("### Troubleshooting:")
+        st.write("- Ensure `streamlit-webrtc` is updated (`pip install streamlit-webrtc --upgrade`).")
+        st.write("- Verify microphone permissions are granted.")
+        st.write("- Use a compatible browser (e.g., Chrome).")
+        st.write("- Check for HTTPS (use `ngrok http 8501` locally).")
+        st.write("- Review console (F12) for WebRTC errors.")
 
-    # Check stream state and provide feedback
+    # Check stream state with timeout for permission prompt
     if ctx:
+        current_time = get_time()
         if not ctx.state.playing:
-            st.warning("⚠️ Waiting for microphone access. Please grant permission when prompted by your browser.")
+            if st.session_state.stream_start_time and (current_time - st.session_state.stream_start_time > 10):
+                st.warning("⚠️ Waiting for microphone access. Permission prompt not detected or denied.")
+                st.write("### Troubleshooting Steps:")
+                st.write("- Click the lock icon in the address bar and ensure 'Microphone' is set to 'Allow'.")
+                st.write("- Reload the page and grant access again.")
+                st.write("- Use a secure connection (HTTPS) or run locally with `ngrok http 8501`.")
+                st.write("- Check browser console (F12) for WebRTC errors.")
+            else:
+                st.warning("⚠️ Waiting for microphone access. Please grant permission when prompted by your browser.")
         else:
             st.write("🎙️ Microphone is active. Start recording when ready.")
+            st.session_state.stream_start_time = None  # Reset timer when stream starts
 
     # Control recording state with safeguards
     col1, col2 = st.columns([1, 1])
@@ -291,6 +319,7 @@ with tab1:
         st.session_state.audio_frames = []
         st.session_state.audio_bytes = None
         st.session_state.recording_active = False
+        st.session_state.transcription = None
         if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
             ctx.audio_processor.reset()
         else:
@@ -300,10 +329,12 @@ with tab1:
     if st.session_state.audio_bytes and st.button("Process Recording", type="primary", use_container_width=True):
         with st.spinner("🔄 Transcribing with AssemblyAI..."):
             user_input = transcribe_audio(st.session_state.audio_bytes)
+            st.session_state.transcription = user_input  # Store transcription
             
             if user_input:
-                st.markdown("### 🎤 You said:")
-                st.info(f'"{user_input}"')
+                st.markdown("### 🎤 Transcribed Text:")
+                st.info(f'"{user_input}"')  # Prominently display transcription
+                st.write("📋 Copy the transcription above for use.")
                 
                 with st.spinner("🤔 Getting AI response..."):
                     answer = get_response(user_input)
@@ -331,6 +362,9 @@ with tab1:
                                     use_container_width=True
                                 )
                         os.unlink(tts_file)
+            else:
+                st.session_state.transcription = None
+                st.error("❌ Transcription failed. Check debug logs and troubleshooting section.")
 
 # ------------------------------
 # Text Input Tab
@@ -375,14 +409,19 @@ with tab2:
 with st.expander("🔧 Troubleshooting"):
     st.markdown("""
     ### If recording doesn't work or transcribes incorrectly:
-    - **Browser Permissions**: Grant mic access when prompted (check site settings).
-    - **HTTPS Required**: Use HTTPS (Render enforces this; locally use ngrok).
+    - **Browser Permissions**: Grant mic access when prompted (check `chrome://settings/content/microphone`).
+    - **HTTPS Required**: Use HTTPS (Render enforces this; locally use `ngrok http 8501`).
     - **No Audio Detected**: Speak clearly for 5-10s; test mic in another app.
     - **AssemblyAI Transcription Issues**:
         - Error 422: Download WAV and verify it plays. Ensure 16kHz mono PCM format.
+        - Error "not a whole number of frames": Record longer or adjust mic settings.
+        - Empty transcription: Check for no speech, low volume, wrong format, short duration, or noise.
         - Ensure `ASSEMBLYAI_API_KEY` is valid and not rate-limited.
-        - For 'Empty' errors, adjust volume, reduce noise, or increase length.
-    - **Component Issues**: Update `streamlit-webrtc` to latest version.
+    - **WebRTC Issues**:
+        - Error 'module object is not callable': Update `streamlit-webrtc` (`pip install streamlit-webrtc --upgrade`).
+        - Verify compatible browser (e.g., Chrome) and HTTPS.
+        - Check console (F12) for errors.
+    - **Component Issues**: Update all dependencies to latest versions.
     - **Local Storage**: Ensure `./audio_files/` is writable.
     - **Render Deployment**: Check logs for WebRTC or API errors.
     """)
