@@ -1,16 +1,15 @@
 streamlit
+streamlit-webrtc
 requests
 gtts
-python-dotenv
-audio-recorder-streamlit
-librosa
-scipy
-dtw-python
-soundfile
-scipy
-fastdtw
+speechrecognition
+numpy
+pyaudio
 streamlit-mic-recorder
-groq
+assemblyai
+noisereduce
+
+
 
 
 
