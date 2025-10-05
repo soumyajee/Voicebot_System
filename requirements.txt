@@ -12,7 +12,9 @@ ffmpeg-python
 faster_whisper
 vosk
 soundfile
+noisereduce
 scipy
+
 
 
 
