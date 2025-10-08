@@ -3,34 +3,22 @@ import requests
 from gtts import gTTS
 import os
 from dotenv import load_dotenv
-import wave
 import assemblyai as aai
-from time import sleep, time as get_time
-import time
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
-import numpy as np
-from scipy.io import wavfile
-from noisereduce import reduce_noise
+from time import time as get_time
+from audio_recorder_streamlit import audio_recorder
+import io
 
 # ------------------------------
 # Load API keys
 # ------------------------------
-# Ensure you have a .env file with OPENROUTER_API_KEY and ASSEMBLYAI_API_KEY
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
-# Set AssemblyAI API key
 if ASSEMBLYAI_API_KEY:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
-else:
-    aai.settings.api_key = None
 
-# API endpoints
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Local directory for saving audio files
 AUDIO_DIR = "./audio_files"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
@@ -38,37 +26,86 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 # Streamlit Page Configuration
 # ------------------------------
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
+st.title("🎙️ Voice Bot with Bluetooth Support")
+st.write("Connect your Bluetooth headset and start talking! 🎧")
 
-st.title("🎙️ Live Voice Bot")
-st.write("Record voice directly in your browser! 🎧 (Grant mic permission when prompted.)")
-
-# Microphone setup guide
-with st.expander("📱 Microphone Setup (Important!)"):
+# ------------------------------
+# Bluetooth Setup Guide
+# ------------------------------
+with st.expander("🔵 Bluetooth Audio Setup (Click to Expand)", expanded=False):
     st.markdown("""
-    ### Before Recording:
-    1. **Allow Microphone Access**: When prompted by your browser, click 'Allow' to grant mic access.
-    2. **Check Browser Settings**: Go to `chrome://settings/content/microphone` (Chrome) or equivalent to ensure your mic is enabled and selected.
-    3. **Use Headphones** if noisy to avoid echo.
-    4. Recording starts with the 'Start Recording' button.
-    5. Speak clearly 6-12 inches from mic for 5-30s.
-    6. **HTTPS Required**: Use HTTPS (locally, use `ngrok http 8501` for secure testing).
+    ### 📱 How to Use Bluetooth Devices:
+    
+    #### **Step 1: Connect Your Bluetooth Device**
+    
+    **On Windows:**
+    1. Open **Settings** → **Bluetooth & devices**
+    2. Turn on Bluetooth
+    3. Click **Add device** → Select your headset/earbuds
+    4. Wait for "Connected" status
+    
+    **On Mac:**
+    1. Click **Apple menu** → **System Settings** → **Bluetooth**
+    2. Turn Bluetooth on
+    3. Click **Connect** next to your device
+    
+    **On Mobile (Android/iOS):**
+    1. Open **Settings** → **Bluetooth**
+    2. Turn on Bluetooth
+    3. Tap your device name to connect
+    
+    #### **Step 2: Set as Default Audio Device**
+    
+    **On Windows:**
+    1. Right-click **speaker icon** in taskbar
+    2. Select **Sound settings**
+    3. Under **Input**, choose your Bluetooth device
+    4. Under **Output**, choose your Bluetooth device
+    
+    **On Mac:**
+    1. Click **Apple menu** → **System Settings** → **Sound**
+    2. Select **Input** tab → Choose Bluetooth device
+    3. Select **Output** tab → Choose Bluetooth device
+    
+    **On Browser (Important!):**
+    - When the page asks for microphone permission, your browser will use the **system default** audio device
+    - Make sure your Bluetooth device is set as default BEFORE opening this page
+    
+    #### **Step 3: Browser Permissions**
+    - Click **Allow** when browser prompts for microphone access
+    - Chrome: `chrome://settings/content/microphone`
+    - Firefox: `about:preferences#privacy` → Permissions → Microphone
+    - Safari: Safari → Settings → Websites → Microphone
+    
+    #### **💡 Tips for Best Performance:**
+    - ✅ Keep Bluetooth device within 30 feet
+    - ✅ Ensure device is fully charged
+    - ✅ Close other audio apps (Spotify, Zoom, etc.)
+    - ✅ Use headsets with built-in mic for clearer audio
+    - ✅ Test your setup: Record a short clip first
+    
+    #### **🔧 Troubleshooting Bluetooth:**
+    - **No audio recorded?** Check if Bluetooth is set as default input in system settings
+    - **Poor quality?** Try moving closer to your device or reducing interference
+    - **Disconnects?** Restart Bluetooth on both devices
+    - **Echo/feedback?** Lower output volume or disable mic monitoring
+    
+    #### **Recommended Bluetooth Devices:**
+    - AirPods/AirPods Pro (excellent for iOS/Mac)
+    - Sony WH-1000XM series (great noise cancellation)
+    - Jabra Elite series (optimized for voice)
+    - Any Bluetooth headset with built-in microphone
     """)
 
 # ------------------------------
 # Session State Initialization
 # ------------------------------
-if 'audio_frames' not in st.session_state:
-    st.session_state.audio_frames = []
-if 'audio_bytes' not in st.session_state:
-    st.session_state.audio_bytes = None
-if 'recording_active' not in st.session_state:
-    st.session_state.recording_active = False
-if 'stream_start_time' not in st.session_state:
-    st.session_state.stream_start_time = None
 if 'transcription' not in st.session_state:
-    st.session_state.transcription = None  # Stores the latest transcription
-if 'warning' not in st.session_state:
-    st.session_state.warning = None
+    st.session_state.transcription = None
+if 'bot_response' not in st.session_state:
+    st.session_state.bot_response = None
+if 'conversation_history' not in st.session_state:
+    st.session_state.conversation_history = []
 
 # ------------------------------
 # Helper Functions
@@ -99,303 +136,166 @@ def text_to_speech(text):
         st.error(f"❌ TTS Error: {e}")
         return None
 
-def save_as_wav(audio_bytes, sample_rate=16000, channels=1, sample_width=2):
-    """Saves raw audio bytes as a WAV file."""
-    try:
-        filename = f"recording_{int(get_time())}.wav"
-        file_path = os.path.join(AUDIO_DIR, filename)
-        frame_size = channels * sample_width
-        total_frames = len(audio_bytes) // frame_size
-        valid_bytes = audio_bytes[:total_frames * frame_size]
-        st.write(f"Debug: Original bytes length: {len(audio_bytes)}, Adjusted to: {len(valid_bytes)} frames")
-
-        with wave.open(file_path, 'wb') as wf:
-            wf.setnchannels(channels)
-            wf.setsampwidth(sample_width)
-            wf.setframerate(sample_rate)
-            wf.writeframes(valid_bytes)
-        st.write(f"Debug: Saved WAV file at {file_path}, size: {os.path.getsize(file_path)} bytes")
-        return file_path
-    except Exception as e:
-        st.error(f"❌ Error saving WAV file: {e}")
-        return None
-
-def check_audio_quality(audio_bytes):
-    """Performs a basic check for volume (RMS)."""
-    temp_path = save_as_wav(audio_bytes)
-    if not temp_path:
-        return False
-    sample_rate, data = wavfile.read(temp_path)
-    os.unlink(temp_path)
-    # Convert to 16-bit for RMS calculation if needed, or handle based on dtype
-    data = data.astype(np.float64) 
-    rms = np.sqrt(np.mean(data**2)) if data.size > 0 else 0
-    st.write(f"Debug: Audio RMS (volume): {rms}")
-    if rms < 500:  # Threshold can be tuned
-        st.warning("⚠️ Audio too quiet—please speak louder and retry.")
-        return False
-    return True
-
 def transcribe_audio(audio_bytes):
-    """Handles audio processing, noise reduction, and AssemblyAI transcription."""
+    """Transcribe audio using AssemblyAI"""
     if not audio_bytes or len(audio_bytes) == 0:
-        st.error("❌ No audio data provided. Recording may have failed.")
+        st.error("❌ No audio data provided.")
         return None
     if not aai.settings.api_key:
-        st.error("❌ AssemblyAI API key not found. Add ASSEMBLYAI_API_KEY to .env file.")
+        st.error("❌ AssemblyAI API key not found.")
         return None
-        
-    file_path = None
-    clean_file_path = None
     
+    # Save audio to temporary file
+    temp_path = os.path.join(AUDIO_DIR, f"recording_{int(get_time())}.wav")
     try:
-        # 1. Save and validate raw audio
-        file_path = save_as_wav(audio_bytes)
-        if not file_path:
-            st.error("❌ Failed to save audio file for transcription.")
-            return None
-
-        file_size = os.path.getsize(file_path)
-        st.write(f"Debug: WAV file size: {file_size} bytes")
+        with open(temp_path, "wb") as f:
+            f.write(audio_bytes)
         
-        with open(file_path, "rb") as f:
-            st.download_button("Download WAV for Debug", f, file_name=os.path.basename(file_path), mime="audio/wav")
-
+        # Check file size
+        file_size = os.path.getsize(temp_path)
         if file_size < 1000:
-            st.error("❌ Audio file too small. Record for at least 5 seconds.")
+            st.error("❌ Audio too short. Please record for at least 2-3 seconds.")
             return None
-
-        if not check_audio_quality(audio_bytes):
-            return None
-
-        # 2. Apply noise reduction
-        sample_rate, data = wavfile.read(file_path)
-        reduced_noise = reduce_noise(y=data, sr=sample_rate)
-        clean_file_path = file_path.replace(".wav", "_clean.wav")
-        wavfile.write(clean_file_path, sample_rate, reduced_noise.astype(np.int16))
-
-        # 3. Configure and transcribe
-        config = aai.TranscriptionConfig(boost_low_volume=True)
-        transcriber = aai.Transcriber()
         
-        retries = 3
-        for attempt in range(retries):
-            try:
-                st.write(f"Debug: Attempting transcription (Attempt {attempt + 1}/{retries})...")
-                transcript = transcriber.transcribe(clean_file_path, config=config)
-                st.write(f"Debug: Transcript status: {transcript.status}")
-
-                if transcript.status == aai.TranscriptStatus.error:
-                    raise Exception(f"Transcription error: {transcript.error}")
-
-                text = transcript.text.strip() if hasattr(transcript, 'text') and transcript.text else None
-                st.write(f"Debug: Transcript text: '{text}'")
-
-                if text:
-                    return text
-                else:
-                    st.warning("⚠️ Empty transcription. Check mic and recording conditions.")
-                    return None
-            except requests.exceptions.HTTPError as e:
-                st.error(f"❌ Transcription HTTP Error: {e}")
-                if attempt < retries - 1:
-                    sleep(2)
-                else:
-                    raise
-            except Exception as e:
-                st.error(f"❌ Transcription Error: {e}")
-                if attempt < retries - 1:
-                    sleep(2)
-                else:
-                    raise
-
+        # Transcribe with optimized settings for Bluetooth audio
+        config = aai.TranscriptionConfig(
+            speech_model=aai.SpeechModel.best,
+            language_code="en",
+            punctuate=True,
+            format_text=True,
+            dual_channel=False,  # Bluetooth is typically mono
+            audio_start_from=0,
+            audio_end_at=None
+        )
+        transcriber = aai.Transcriber()
+        transcript = transcriber.transcribe(temp_path, config=config)
+        
+        if transcript.status == aai.TranscriptStatus.error:
+            st.error(f"❌ Transcription error: {transcript.error}")
+            return None
+        
+        return transcript.text.strip() if transcript.text else None
     except Exception as e:
-        st.error(f"❌ AssemblyAI Transcription Error: {e}")
+        st.error(f"❌ Transcription Error: {e}")
         return None
     finally:
-        # Clean up files
-        if file_path and os.path.exists(file_path):
-            os.unlink(file_path)
-        if clean_file_path and os.path.exists(clean_file_path):
-            os.unlink(clean_file_path)
-
-# Custom Audio Processor for streamlit-webrtc
-class AudioProcessor:
-    def __init__(self):
-        self.audio_frames = []
-        self.transcriber = None
-        self.last_transcript = ""
-        self.rms_history = []
-
-    def recv(self, frame: av.AudioFrame):
-        if frame and st.session_state.recording_active:
-            # Convert frame to raw bytes (16-bit PCM)
-            audio_data = frame.to_ndarray().tobytes()
-            self.audio_frames.append(audio_data)
-
-            # Real-time RMS check for volume feedback
-            samples = np.frombuffer(audio_data, dtype=np.int16)
-            rms = np.sqrt(np.mean(samples**2)) if samples.size > 0 else 0
-            self.rms_history.append(rms)
-            if len(self.rms_history) > 10:  # Smooth over last 10 frames
-                avg_rms = np.mean(self.rms_history[-10:])
-                if avg_rms < 500:
-                    st.session_state.warning = "⚠️ Audio too quiet—please speak louder."
-
-            # Initialize transcriber if not started
-            if not self.transcriber:
-                config = aai.RealtimeTranscriberConfig(sample_rate=16000, word_boost=["important", "key"])
-                self.transcriber = aai.RealtimeTranscriber(config=config)
-                self.transcriber.connect()
-                st.session_state.transcription = ""
-
-            # Send audio chunk to AssemblyAI
-            if self.transcriber.is_connected():
-                self.transcriber.send_audio(audio_data)
-
-            # Update transcription live
-            for transcript in self.transcriber.streaming_transcript():
-                if transcript and transcript.text:
-                    st.session_state.transcription = transcript.text
-                    self.last_transcript = transcript.text
-        return frame
-
-    def reset(self):
-        self.audio_frames = []
-        self.rms_history = []
-        if self.transcriber and self.transcriber.is_connected():
-            self.transcriber.disconnect()
-        self.transcriber = None
-        st.session_state.transcription = ""
-        st.session_state.warning = None
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 # ------------------------------
 # Main Interface Tabs
 # ------------------------------
-tab1, tab2 = st.tabs(["🎤 Voice Input", "📝 Text Input"])
+tab1, tab2, tab3 = st.tabs(["🎤 Voice Input", "📝 Text Input", "📜 History"])
 
 # ------------------------------
 # Voice Input Tab
-# ----------------------
+# ------------------------------
 with tab1:
     st.subheader("Browser-Based Voice Recording")
     
-    # Initialize WebRTC streamer
-    ctx = None
-    try:
-        ctx = webrtc_streamer(
-            key="audio-recorder",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTCConfiguration({
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}, {"urls": ["stun:stun1.l.google.com:19302"]}],
-                "sdpSemantics": "unified-plan"
-            }),
-            audio_processor_factory=lambda: AudioProcessor(),
-            media_stream_constraints={"video": False, "audio": True},
-            async_processing=True,
-        )
-        if ctx and st.session_state.stream_start_time is None:
-            st.session_state.stream_start_time = get_time()
-    except Exception as e:
-        st.error(f"❌ WebRTC initialization failed: {e}")
-        st.write("### Troubleshooting:")
-        st.write("- Ensure `streamlit-webrtc` is updated (`pip install streamlit-webrtc --upgrade`).")
-        st.write("- Verify microphone permissions are granted.")
-
-    # Check stream state with timeout for permission prompt
-    if ctx:
-        current_time = get_time()
-        if not ctx.state.playing:
-            if st.session_state.stream_start_time and (current_time - st.session_state.stream_start_time > 10):
-                st.warning("⚠️ Waiting for microphone access. Permission prompt not detected or denied.")
-            else:
-                st.warning("⚠️ Waiting for microphone access. Please grant permission when prompted by your browser.")
-        else:
-            st.write("🎙️ Microphone is active. Start recording when ready.")
-            st.session_state.stream_start_time = None
-            
-    # Control recording state with safeguards
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # Audio device status indicator
+    col_status1, col_status2 = st.columns([2, 1])
+    with col_status1:
+        st.info("🔵 **Bluetooth Ready:** Make sure your device is connected and set as default")
+    with col_status2:
+        if st.button("🔄 Refresh Page", help="Refresh if you just connected Bluetooth"):
+            st.rerun()
     
-    with col1:
-        if st.button("Start Recording", use_container_width=True, disabled=st.session_state.recording_active or not (ctx and ctx.state.playing)):
-            st.session_state.recording_active = True
-            st.session_state.audio_frames = []
-            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
-                ctx.audio_processor.reset()
-            st.session_state.warning = None
-            st.rerun()
-            
-    with col2:
-        if st.button("Stop Recording", use_container_width=True, disabled=not st.session_state.recording_active):
-            st.session_state.recording_active = False
-            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
-                ctx.audio_processor.reset()
-                st.session_state.audio_bytes = b''.join(ctx.audio_processor.audio_frames)
-                st.session_state.transcription = ctx.audio_processor.last_transcript
-                if st.session_state.audio_bytes:
-                    st.success("✅ Recording captured!")
-                    st.audio(st.session_state.audio_bytes, format="audio/wav")
-                else:
-                    st.error("❌ No audio captured. Ensure mic is working.")
-            st.rerun()
-
-    with col3:
-        if st.button("Clear Recording", use_container_width=True, disabled=st.session_state.recording_active):
-            st.session_state.audio_frames = []
-            st.session_state.audio_bytes = None
-            st.session_state.transcription = None
-            st.session_state.warning = None
-            if ctx and hasattr(ctx, 'audio_processor') and ctx.audio_processor:
-                ctx.audio_processor.reset()
-            st.rerun()
-
-    # Live Transcription Display
     st.markdown("---")
-    if st.session_state.warning:
-        st.warning(st.session_state.warning)
-    if st.session_state.transcription:
-        st.markdown("### 🎤 Live Transcription:")
-        st.info(st.session_state.transcription)
-        st.caption("This updates in real-time while recording.")
-
-    # Main Processing Button (for AI response after stopping)
-    if st.session_state.transcription and st.button("Process Transcription", type="primary", use_container_width=True, disabled=st.session_state.recording_active):
-        with st.spinner("🤔 Getting AI response..."):
-            answer = get_response(st.session_state.transcription)
+    
+    # Audio recorder component with custom styling
+    st.markdown("""
+    <style>
+    .audio-recorder {
+        display: flex;
+        justify-content: center;
+        padding: 20px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Audio recorder
+    audio_bytes = audio_recorder(
+        text="🎙️ Click to Record",
+        recording_color="#e74c3c",
+        neutral_color="#3498db",
+        icon_name="microphone",
+        icon_size="3x",
+        pause_threshold=2.0,  # Auto-stop after 2s of silence
+        sample_rate=16000  # Optimal for Bluetooth
+    )
+    
+    # Quick tips
+    st.caption("💡 **Tip:** Speak clearly 6-12 inches from your Bluetooth mic. Recording auto-stops after silence.")
+    
+    if audio_bytes:
+        st.success("✅ Audio captured successfully!")
         
-        if answer:
-            st.markdown("---")
-            st.markdown("### 🤖 Bot Response:")
-            st.write(answer)
+        # Audio player
+        col_audio, col_info = st.columns([2, 1])
+        with col_audio:
+            st.audio(audio_bytes, format="audio/wav")
+        with col_info:
+            st.metric("Audio Size", f"{len(audio_bytes) / 1024:.1f} KB")
+        
+        # Process button
+        if st.button("🎯 Transcribe & Get Response", type="primary", use_container_width=True):
+            with st.spinner("🎤 Transcribing your voice..."):
+                transcription = transcribe_audio(audio_bytes)
             
-            with st.spinner("🔊 Generating voice response..."):
-                tts_file = text_to_speech(answer)
-            
-            if tts_file:
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.audio(tts_file, format="audio/mp3")
-                with col_b:
-                    with open(tts_file, "rb") as f:
-                        st.download_button(
-                            label="📥 Download",
-                            data=f,
-                            file_name="response.mp3",
-                            mime="audio/mp3",
-                            key="voice_download",
-                            use_container_width=True
-                        )
-                os.unlink(tts_file)
-        else:
-            st.error("❌ Failed to get AI response.")
-        st.rerun()
+            if transcription:
+                st.session_state.transcription = transcription
+                st.success("✅ Transcription complete!")
+                
+                # Display transcription
+                st.markdown("### 📝 What You Said:")
+                st.info(transcription)
+                
+                # Get AI response
+                with st.spinner("🤔 Thinking of a response..."):
+                    answer = get_response(transcription)
+                
+                if answer:
+                    st.session_state.bot_response = answer
+                    
+                    # Save to history
+                    st.session_state.conversation_history.append({
+                        "user": transcription,
+                        "bot": answer,
+                        "timestamp": get_time()
+                    })
+                    
+                    st.markdown("### 🤖 Bot Response:")
+                    st.write(answer)
+                    
+                    # Generate TTS
+                    with st.spinner("🔊 Generating voice response..."):
+                        tts_file = text_to_speech(answer)
+                    
+                    if tts_file:
+                        st.markdown("### 🔊 Listen to Response:")
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.audio(tts_file, format="audio/mp3")
+                            st.caption("🔵 Audio will play through your Bluetooth device")
+                        with col_b:
+                            with open(tts_file, "rb") as f:
+                                st.download_button(
+                                    label="📥 Download",
+                                    data=f,
+                                    file_name="response.mp3",
+                                    mime="audio/mp3",
+                                    use_container_width=True
+                                )
+                        os.unlink(tts_file)
+            else:
+                st.error("❌ Failed to transcribe. Check Bluetooth connection and try again.")
 
 # ------------------------------
 # Text Input Tab
 # ------------------------------
 with tab2:
-    st.subheader("Text Input")
+    st.subheader("Text Input (Alternative)")
     user_text = st.text_area("Type your message:", height=150, placeholder="Ask me anything...")
     
     if st.button("Send Text", type="primary"):
@@ -404,6 +304,13 @@ with tab2:
                 answer = get_response(user_text)
             
             if answer:
+                # Save to history
+                st.session_state.conversation_history.append({
+                    "user": user_text,
+                    "bot": answer,
+                    "timestamp": get_time()
+                })
+                
                 st.markdown("### 🤖 Bot Response:")
                 st.write(answer)
                 
@@ -414,6 +321,7 @@ with tab2:
                     col_a, col_b = st.columns([3, 1])
                     with col_a:
                         st.audio(tts_file, format="audio/mp3")
+                        st.caption("🔵 Audio plays through Bluetooth if connected")
                     with col_b:
                         with open(tts_file, "rb") as f:
                             st.download_button(
@@ -421,7 +329,6 @@ with tab2:
                                 data=f,
                                 file_name="response.mp3",
                                 mime="audio/mp3",
-                                key="text_download",
                                 use_container_width=True
                             )
                     os.unlink(tts_file)
@@ -429,26 +336,84 @@ with tab2:
             st.warning("Please enter some text first.")
 
 # ------------------------------
-# Troubleshooting Section
+# Conversation History Tab
 # ------------------------------
-with st.expander("🔧 Troubleshooting"):
+with tab3:
+    st.subheader("Conversation History")
+    
+    if st.session_state.conversation_history:
+        if st.button("🗑️ Clear History"):
+            st.session_state.conversation_history = []
+            st.rerun()
+        
+        st.markdown("---")
+        for idx, exchange in enumerate(reversed(st.session_state.conversation_history)):
+            with st.container():
+                st.markdown(f"**Exchange #{len(st.session_state.conversation_history) - idx}**")
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    st.markdown("**👤 You:**")
+                    st.info(exchange["user"])
+                with col2:
+                    st.markdown("**🤖 Bot:**")
+                    st.success(exchange["bot"])
+                st.markdown("---")
+    else:
+        st.info("No conversations yet. Start recording in the Voice Input tab!")
+
+# ------------------------------
+# Bluetooth Testing Section
+# ------------------------------
+with st.expander("🧪 Test Your Bluetooth Audio"):
     st.markdown("""
-    ### If recording doesn't work or transcribes incorrectly:
-    - **Browser Permissions**: Grant mic access when prompted (check `chrome://settings/content/microphone`).
-    - **HTTPS Required**: Use HTTPS (Render enforces this; locally use `ngrok http 8501`).
-    - **No Audio Detected**: Speak clearly for 5-10s; test mic in another app.
-    - **AssemblyAI Transcription Issues**:
-        - Error 422: Download WAV and verify it plays. Ensure 16kHz mono PCM format.
-        - Empty transcription: Check for no speech, low volume, wrong format, short duration, or noise.
-        - Ensure `ASSEMBLYAI_API_KEY` is valid and not rate-limited.
-    - **WebRTC Issues**:
-        - Error 'module object is not callable': Update `streamlit-webrtc` (`pip install streamlit-webrtc --upgrade`).
-        - Verify compatible browser (e.g., Chrome) and HTTPS.
-        - Check console (F12) for errors.
-    - **Component Issues**: Update all dependencies to latest versions.
-    - **Local Storage**: Ensure `./audio_files/` is writable.
-    - **Render Deployment**: Check logs for WebRTC or API errors.
+    ### Quick Bluetooth Test
+    1. Connect your Bluetooth device
+    2. Click record below and say "Testing one two three"
+    3. Play it back - you should hear it through your Bluetooth device
+    """)
+    
+    test_audio = audio_recorder(
+        text="Test Recording",
+        recording_color="#f39c12",
+        neutral_color="#95a5a6",
+        icon_name="flask",
+        icon_size="2x",
+        key="test_recorder"
+    )
+    
+    if test_audio:
+        st.success("✅ Test recording successful!")
+        st.audio(test_audio, format="audio/wav")
+        st.info("🔵 If you hear this through your Bluetooth device, setup is correct!")
+
+# ------------------------------
+# Setup Instructions
+# ------------------------------
+with st.expander("📦 Installation & Setup"):
+    st.code("""
+# Install required packages
+pip install streamlit
+pip install audio-recorder-streamlit
+pip install assemblyai
+pip install gtts
+pip install requests
+pip install python-dotenv
+
+# Create .env file with:
+OPENROUTER_API_KEY=your_openrouter_key
+ASSEMBLYAI_API_KEY=your_assemblyai_key
+
+# Run the app:
+streamlit run app.py
+    """, language="bash")
+    
+    st.markdown("""
+    ### 🔧 System Requirements:
+    - **Python:** 3.8 or higher
+    - **Browser:** Chrome, Firefox, Safari, or Edge (latest version)
+    - **Bluetooth:** Version 4.0 or higher recommended
+    - **Internet:** Required for API calls
     """)
 
 st.markdown("---")
-st.caption("Powered by AssemblyAI & OpenRouter GPT")
+st.caption("🔵 Powered by AssemblyAI & OpenRouter GPT | Bluetooth-Optimized")
