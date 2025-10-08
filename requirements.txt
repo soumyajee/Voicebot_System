@@ -5,6 +5,7 @@ python-dotenv
 assemblyai
 streamlit-mic-recorder
 streamlit-webrtc==0.47.0
+audio_recorder_streamlit
 aiortc
 av
 pydub
@@ -14,6 +15,7 @@ vosk
 soundfile
 noisereduce
 scipy
+
 
 
 
