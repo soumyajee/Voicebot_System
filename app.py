@@ -26,15 +26,54 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 # Streamlit Page Configuration
 # ------------------------------
 st.set_page_config(page_title="Voice Bot", page_icon="🎙️", layout="wide")
-st.title("🎙️ Voice Bot with Bluetooth Support")
-st.write("Connect your Bluetooth headset and start talking! 🎧")
+st.title("🎙️ Universal Voice Bot")
+st.write("Works with ANY microphone - built-in, USB, wired, or Bluetooth! 🎧")
 
 # ------------------------------
-# Bluetooth Setup Guide
+# Audio Device Setup Guide
 # ------------------------------
-with st.expander("🔵 Bluetooth Audio Setup (Click to Expand)", expanded=False):
+with st.expander("🎧 Audio Device Setup (Click to Expand)", expanded=False):
     st.markdown("""
-    ### 📱 How to Use Bluetooth Devices:
+    ### 🎤 This App Works With ANY Audio Device!
+    
+    The browser uses your **system's default audio device** - whether it's:
+    - 🖥️ Built-in laptop/phone microphone (works automatically!)
+    - 🔌 USB microphones (Blue Yeti, Rode, etc.)
+    - 🎧 Wired headsets (3.5mm jack, USB-C)
+    - 🔵 Bluetooth headsets and wireless earbuds
+    - 🎙️ Professional audio interfaces
+    
+    ---
+    
+    ### 🖥️ Built-in Microphone (Easiest - No Setup!)
+    
+    **Just open the app and start recording!**
+    - Laptops, phones, tablets work out of the box
+    - Grant microphone permission when browser asks
+    - That's it!
+    
+    ---
+    
+    ### 🔌 USB/Wired Microphones
+    
+    **On Windows:**
+    1. Plug in your USB microphone or wired headset
+    2. Right-click **speaker icon** → **Sound settings**
+    3. Under **Input**, select your device
+    4. Test by speaking and watching the input level
+    
+    **On Mac:**
+    1. Plug in your device
+    2. **System Settings** → **Sound** → **Input**
+    3. Select your microphone from the list
+    4. Check input level while speaking
+    
+    **On Mobile:**
+    - Just plug in your wired headset - auto-detects!
+    
+    ---
+    
+    ### 🔵 Bluetooth Devices
     
     #### **Step 1: Connect Your Bluetooth Device**
     
@@ -54,7 +93,7 @@ with st.expander("🔵 Bluetooth Audio Setup (Click to Expand)", expanded=False)
     2. Turn on Bluetooth
     3. Tap your device name to connect
     
-    #### **Step 2: Set as Default Audio Device**
+    #### **Step 2: Set as Default Audio Device (Important!)**
     
     **On Windows:**
     1. Right-click **speaker icon** in taskbar
@@ -71,30 +110,29 @@ with st.expander("🔵 Bluetooth Audio Setup (Click to Expand)", expanded=False)
     - When the page asks for microphone permission, your browser will use the **system default** audio device
     - Make sure your Bluetooth device is set as default BEFORE opening this page
     
-    #### **Step 3: Browser Permissions**
-    - Click **Allow** when browser prompts for microphone access
+    #### **Step 3: Grant Browser Permission**
+    - When the page asks for microphone permission, click **"Allow"**
+    - Your browser will use the system default audio device
     - Chrome: `chrome://settings/content/microphone`
     - Firefox: `about:preferences#privacy` → Permissions → Microphone
     - Safari: Safari → Settings → Websites → Microphone
     
-    #### **💡 Tips for Best Performance:**
-    - ✅ Keep Bluetooth device within 30 feet
-    - ✅ Ensure device is fully charged
-    - ✅ Close other audio apps (Spotify, Zoom, etc.)
-    - ✅ Use headsets with built-in mic for clearer audio
-    - ✅ Test your setup: Record a short clip first
+    ---
     
-    #### **🔧 Troubleshooting Bluetooth:**
-    - **No audio recorded?** Check if Bluetooth is set as default input in system settings
-    - **Poor quality?** Try moving closer to your device or reducing interference
-    - **Disconnects?** Restart Bluetooth on both devices
-    - **Echo/feedback?** Lower output volume or disable mic monitoring
+    ### 💡 Universal Tips for All Devices:
+    - ✅ Speak clearly 6-12 inches from microphone
+    - ✅ Use quiet environment for best results
+    - ✅ Test your setup with the test recorder below
+    - ✅ For USB: Try different USB ports if issues occur
+    - ✅ For Bluetooth: Keep within 30 feet and fully charged
+    - ✅ Close other apps using the microphone
     
-    #### **Recommended Bluetooth Devices:**
-    - AirPods/AirPods Pro (excellent for iOS/Mac)
-    - Sony WH-1000XM series (great noise cancellation)
-    - Jabra Elite series (optimized for voice)
-    - Any Bluetooth headset with built-in microphone
+    ### 🔧 Quick Troubleshooting:
+    - **No audio?** Check device is set as default in system settings
+    - **Poor quality?** Check positioning and background noise
+    - **Device not detected?** Refresh page after connecting
+    - **USB not working?** Try different USB port or restart computer
+    - **Bluetooth issues?** Unpair and re-pair the device
     """)
 
 # ------------------------------
@@ -196,9 +234,9 @@ with tab1:
     # Audio device status indicator
     col_status1, col_status2 = st.columns([2, 1])
     with col_status1:
-        st.info("🔵 **Bluetooth Ready:** Make sure your device is connected and set as default")
+        st.info("🎤 **Ready:** Using your system's default audio device (built-in, USB, wired, or Bluetooth)")
     with col_status2:
-        if st.button("🔄 Refresh Page", help="Refresh if you just connected Bluetooth"):
+        if st.button("🔄 Refresh Page", help="Refresh if you just connected a new device"):
             st.rerun()
     
     st.markdown("---")
@@ -226,7 +264,7 @@ with tab1:
     )
     
     # Quick tips
-    st.caption("💡 **Tip:** Speak clearly 6-12 inches from your Bluetooth mic. Recording auto-stops after silence.")
+    st.caption("💡 **Tip:** Works with any mic! Speak clearly 6-12 inches away. Recording auto-stops after silence.")
     
     if audio_bytes:
         st.success("✅ Audio captured successfully!")
@@ -277,7 +315,7 @@ with tab1:
                         col_a, col_b = st.columns([3, 1])
                         with col_a:
                             st.audio(tts_file, format="audio/mp3")
-                            st.caption("🔵 Audio will play through your Bluetooth device")
+                            st.caption("🔊 Audio plays through your current audio device")
                         with col_b:
                             with open(tts_file, "rb") as f:
                                 st.download_button(
@@ -321,7 +359,7 @@ with tab2:
                     col_a, col_b = st.columns([3, 1])
                     with col_a:
                         st.audio(tts_file, format="audio/mp3")
-                        st.caption("🔵 Audio plays through Bluetooth if connected")
+                        st.caption("🔊 Audio plays through your current audio device")
                     with col_b:
                         with open(tts_file, "rb") as f:
                             st.download_button(
@@ -362,14 +400,14 @@ with tab3:
         st.info("No conversations yet. Start recording in the Voice Input tab!")
 
 # ------------------------------
-# Bluetooth Testing Section
+# Audio Device Testing Section
 # ------------------------------
-with st.expander("🧪 Test Your Bluetooth Audio"):
+with st.expander("🧪 Test Your Audio Device"):
     st.markdown("""
-    ### Quick Bluetooth Test
-    1. Connect your Bluetooth device
+    ### Quick Audio Test
+    1. Connect any audio device (or use built-in mic)
     2. Click record below and say "Testing one two three"
-    3. Play it back - you should hear it through your Bluetooth device
+    3. Play it back through your audio device
     """)
     
     test_audio = audio_recorder(
@@ -384,7 +422,7 @@ with st.expander("🧪 Test Your Bluetooth Audio"):
     if test_audio:
         st.success("✅ Test recording successful!")
         st.audio(test_audio, format="audio/wav")
-        st.info("🔵 If you hear this through your Bluetooth device, setup is correct!")
+        st.info("🔊 If you hear this clearly, your audio setup is working perfectly!")
 
 # ------------------------------
 # Setup Instructions
@@ -411,7 +449,7 @@ streamlit run app.py
     ### 🔧 System Requirements:
     - **Python:** 3.8 or higher
     - **Browser:** Chrome, Firefox, Safari, or Edge (latest version)
-    - **Bluetooth:** Version 4.0 or higher recommended
+    - **Audio Device:** Any microphone (built-in, USB, wired, or Bluetooth)
     - **Internet:** Required for API calls
     """)
 
